@@ -1,0 +1,11 @@
+[
+  {"name": "type:feature",      "color": "0e8a16", "description": "New feature"},
+  {"name": "type:bug",          "color": "d73a4a", "description": "Bug fix"},
+  {"name": "type:refactor",     "color": "e4e669", "description": "Code refactoring"},
+  {"name": "priority:high",     "color": "b60205", "description": "High priority"},
+  {"name": "priority:med",      "color": "fbca04", "description": "Medium priority"},
+  {"name": "priority:low",      "color": "0e8a16", "description": "Low priority"},
+  {"name": "ready",             "color": "0075ca", "description": "Ready for development"},
+  {"name": "needs-refinement",  "color": "d876e3", "description": "Needs more detail before development"},
+  {"name": "in-progress",       "color": "f9d0c4", "description": "Currently being worked on"}
+]
