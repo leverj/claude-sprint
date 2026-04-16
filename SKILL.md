@@ -18,6 +18,7 @@ You manage a scrum-like development workflow using GitHub Issues as the single s
 - Acceptance criteria use WHEN/THEN/SHALL format for testability.
 - Implementation is phased — implement, test, and verify each phase before moving on.
 - Decisions capture the *why* alongside the *what*.
+- **Never commit, push, or create PRs without explicit user permission.** Always present changes for review first and ask the developer to confirm before any git commit, git push, or PR creation.
 
 The skill templates are in the `templates/` directory and label definitions in `setup/labels.json`, both relative to this skill's directory: `${CLAUDE_SKILL_DIR}`.
 
@@ -225,13 +226,14 @@ For each phase listed in the Implementation Phases section:
 
 1. **Implement** the phase — write the code, following existing project patterns and conventions
 2. **Test** — write or update tests that verify the acceptance criteria covered by this phase. Run the test suite to confirm.
-3. **Commit** — create a commit referencing the issue: `Refs #N: <phase description>`
-4. **Update the issue** — mark the phase checkbox as complete on GitHub:
+3. **Update the issue** — mark the phase checkbox as complete on GitHub:
    - Fetch current body: `gh issue view N --json body -q '.body'`
    - Find the specific `- [ ] Phase X:` line and replace `- [ ]` with `- [x]`
    - Update: `gh api repos/{REPO}/issues/N -f body="<updated body>"`
 
 Repeat for each phase. If a phase reveals problems or new requirements, discuss with the developer before proceeding.
+
+**Do NOT commit anything yet.** Code changes are local only at this point.
 
 ### Step 6: Final review
 
@@ -239,11 +241,33 @@ After all phases are complete:
 
 1. Run the full test suite
 2. Check for lint or type errors if the project has those tools
-3. Review all changes: `git diff main..HEAD` (or the base branch)
+3. Review all changes: `git diff` to show the developer what was changed
+4. Present a summary of all changes, organized by phase
 
-### Step 7: Create PR
+### Step 7: User review and commit
 
-Create a pull request:
+**Ask the developer to review the changes before committing.** Present:
+- A summary of files changed and what each change does
+- The proposed commit message(s)
+- Ask: "Would you like to review the diff, adjust anything, or proceed with committing?"
+
+**Only after the developer explicitly approves**, commit the changes:
+- `git add <specific files>` (never `git add -A`)
+- Create commit(s) referencing the issue: `Refs #N: <phase description>`
+
+**Do NOT push to remote yet.**
+
+### Step 8: Push and create PR
+
+**Ask the developer for permission before pushing and creating the PR.** Present:
+- The commit(s) that will be pushed
+- The proposed PR title and body
+- Ask: "Ready to push and create the PR?"
+
+**Only after the developer explicitly approves**, push and create the PR:
+
+1. Push: `git push -u origin <branch-name>`
+2. Create PR:
 
 ```
 gh pr create --title "<concise title>" --body "Closes #N
@@ -259,7 +283,7 @@ gh pr create --title "<concise title>" --body "Closes #N
 "
 ```
 
-### Step 8: Report
+### Step 9: Report
 
 Show the PR URL and a summary of what was implemented, which phases were completed, and any remaining notes.
 

@@ -75,9 +75,10 @@ When a developer runs `/sprint pick`, Claude assigns the issue to them on GitHub
 
 1. Implement the phase
 2. Write/update tests
-3. Commit (referencing the issue)
-4. Update the phase checkbox on GitHub
-5. Move to next phase
+3. Update the phase checkbox on GitHub
+4. Move to next phase
+
+After all phases are complete, Claude presents the changes for review. **Code is never committed, pushed, or turned into a PR without explicit developer approval.** The developer gets a chance to review the diff, adjust the commit message, and confirm before anything leaves their local machine.
 
 If a session ends mid-work, the next developer can see which phases are checked off.
 
