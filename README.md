@@ -24,6 +24,12 @@ git clone https://github.com/leverj/claude-sprint .claude/skills/sprint
 
 Optionally, add the snippet from `claude-md-snippet.md` to your project's `CLAUDE.md` so Claude remembers the workflow in every session.
 
+## Updating
+
+```bash
+cd ~/.claude/skills/sprint && git pull
+```
+
 ## Quick Start
 
 ```
