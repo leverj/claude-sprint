@@ -74,17 +74,31 @@ Run: `mkdir -p .dev/decisions`
 
 **Purpose**: Interactive session to refine and create one or more structured GitHub Issues.
 
-### Step 1: Discuss requirements
+### Step 1: Discuss and decompose requirements
 
-Ask the developer what they want to build, fix, or improve. Allow them to describe multiple requirements in natural language. For each requirement, probe for:
+Ask the developer what they want to build, fix, or improve. They may give anything from a one-liner ("add social login") to a detailed spec.
 
-- What problem does this solve?
-- Who is affected?
-- What are the edge cases and constraints?
-- Is this a feature, bug fix, or refactor?
-- What priority — high, medium, or low?
+**If the requirement is large or spans multiple concerns**, break it down into smaller, independently implementable issues. For example, "add social login" might decompose into:
+- OAuth provider integration (Google, Apple)
+- Account linking/merging flow
+- Session management and token refresh
+- UI for sign-in screen
 
-Continue the discussion until the developer confirms the requirements are complete.
+Present the proposed breakdown to the developer and discuss each piece:
+
+1. **Propose the decomposition**: "This looks like it breaks into N pieces: [list]. Does this split make sense, or would you group things differently?"
+2. **Discuss each piece one by one**: For each proposed issue, probe for:
+   - What problem does this solve?
+   - Who is affected?
+   - What are the edge cases and constraints?
+   - Is this a feature, bug fix, or refactor?
+   - What priority — high, medium, or low?
+   - Are there dependencies between this and the other pieces?
+3. **Get confirmation**: Don't create any issues until the developer confirms the full set. They may want to merge, split, reprioritize, or defer some pieces.
+
+If the requirement is small and self-contained, skip the decomposition step and discuss it directly.
+
+Note dependencies between issues in the Notes section of each issue (e.g., "Depends on #42 for OAuth token flow").
 
 ### Step 2: Structure each requirement
 
