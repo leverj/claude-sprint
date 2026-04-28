@@ -22,3 +22,7 @@ As a [role], I want [capability] so that [benefit].
 ## Notes
 
 [Additional context, links, screenshots, related decisions]
+
+## Dependency Safety
+
+[Auto-populated at PR time when this issue's implementation adds or upgrades dependencies. One row per package: `package@version`, publish date, advisories checked, fallback reason if applicable, override justification if applicable. Leave this section blank if no dependency changes were made.]
