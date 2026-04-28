@@ -20,11 +20,31 @@ You manage a scrum-like development workflow using GitHub Issues as the single s
 - Decisions capture the *why* alongside the *what*.
 - **Never commit, push, or create PRs without explicit user permission.** Always present changes for review first and ask the developer to confirm before any git commit, git push, or PR creation.
 
-The skill templates are in the `templates/` directory and label definitions in `setup/labels.json`, both relative to this skill's directory: `${CLAUDE_SKILL_DIR}`.
+The skill templates are in the `templates/` directory and label definitions in `setup/labels.json`, both relative to this skill's directory: `<SKILL DIR>`.
+
+## Invocation
+
+This workflow is tool-agnostic. Two placeholders appear throughout:
+
+- **`<USER REQUEST>`** — the developer's invocation arguments (e.g., `pick 2`, `plan add OAuth`, or a free-form description).
+- **`<SKILL DIR>`** — the absolute path to the directory containing this `SKILL.md` (used to locate `templates/` and `setup/labels.json`).
+
+How each tool resolves them:
+
+| Tool | `<USER REQUEST>` | `<SKILL DIR>` |
+| --- | --- | --- |
+| Claude Code | The text after `/sprint` in the slash-command invocation. Treat the whole tail (e.g., `pick 2`) as `<USER REQUEST>`. | The directory of the loaded skill (typically `~/.claude/skills/sprint/`). |
+| Codex CLI | Inline in the prompt: `codex "run sprint: pick 2"`. The text after `run sprint:` is `<USER REQUEST>`. | The directory containing `AGENTS.md` (the symlink to `SKILL.md`) in the cloned repo. |
+| Gemini CLI | Inline in the prompt: `gemini "run sprint: pick 2"`. Text after `run sprint:` is `<USER REQUEST>`. | The directory containing `GEMINI.md` (which `@./SKILL.md`-imports this file). |
+| Cursor | Either invoke the rule by name in chat with the request appended, or place the request in the chat message. | The rules directory holding the symlink/copy. |
+| OpenCode | Inline in the prompt; OpenCode reads `AGENTS.md` automatically from the working directory. | Project root or the directory containing `AGENTS.md`. |
+| GitHub Copilot CLI | Inline in the prompt with the request as the message body. | Project root or the directory containing `AGENTS.md`. |
+
+If the tool does not auto-substitute, treat the placeholder as a contextual reference: read the user's actual message to determine `<USER REQUEST>`, and read the working directory or the rule-file's location to determine `<SKILL DIR>`.
 
 ## User instructions
 
-$ARGUMENTS
+<USER REQUEST>
 
 ## Command routing
 
@@ -57,7 +77,7 @@ Run these checks in parallel:
 
 Run: `gh label list --search "type:" --limit 1 --json name -q '.[0].name'`
 
-If no result is returned, the sprint labels haven't been created yet. Read the label definitions from `${CLAUDE_SKILL_DIR}/setup/labels.json` and create each one:
+If no result is returned, the sprint labels haven't been created yet. Read the label definitions from `<SKILL DIR>/setup/labels.json` and create each one:
 
 ```
 gh label create "<name>" --color "<color>" --description "<description>" --force
@@ -103,7 +123,7 @@ Note dependencies between issues in the Notes section of each issue (e.g., "Depe
 
 ### Step 2: Structure each requirement
 
-For each requirement discussed, read the template from `${CLAUDE_SKILL_DIR}/templates/issue-body.md` and fill it in:
+For each requirement discussed, read the template from `<SKILL DIR>/templates/issue-body.md` and fill it in:
 
 - **User Story**: Write in "As a [role], I want [capability] so that [benefit]" format.
 - **Acceptance Criteria**: Write each criterion using the WHEN/THEN/SHALL format. Cover:
@@ -336,7 +356,7 @@ If yes, note the issue numbers for cross-linking.
 
 ### Step 4: Write the decision record
 
-Read the template from `${CLAUDE_SKILL_DIR}/templates/decision-record.md` and fill it in with the discussed details.
+Read the template from `<SKILL DIR>/templates/decision-record.md` and fill it in with the discussed details.
 
 Write to `.dev/decisions/D-<NNN>-<slugified-title>.md`
 

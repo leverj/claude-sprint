@@ -1,33 +1,48 @@
 # claude-sprint
 
-A Claude Code skill that brings scrum-like development workflow to your GitHub repo. Requirements live as structured GitHub Issues, decisions are recorded as ADRs in the repo, and any developer can pick up where someone left off.
+A scrum-like development workflow that runs across multiple AI coding tools. Requirements live as structured GitHub Issues, decisions are recorded as ADRs in the repo, and any developer can pick up where someone left off.
 
 ## Prerequisites
 
-- [Claude Code](https://claude.ai/code) installed
+- A supported AI coding tool (see below)
 - [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated (`gh auth login`)
 - A git repo with a GitHub remote
 
-## Installation
+## Supported tools
 
-**Global** (available in all your repos):
+The canonical workflow lives in `SKILL.md`. `AGENTS.md` is a git symlink to it (mode `120000`), and `GEMINI.md` imports it via `@./SKILL.md` — so every tool reads the same source with no manual sync.
+
+| Tool | Discovery file | Install doc |
+| --- | --- | --- |
+| Claude Code | `~/.claude/skills/sprint/SKILL.md` | [docs/install/claude-code.md](docs/install/claude-code.md) |
+| Codex CLI | `AGENTS.md` (project root) | [docs/install/codex.md](docs/install/codex.md) |
+| Gemini CLI | `GEMINI.md` (project root) | [docs/install/gemini-cli.md](docs/install/gemini-cli.md) |
+| Cursor | `AGENTS.md` or `.cursor/rules/*.mdc` | [docs/install/cursor.md](docs/install/cursor.md) |
+| OpenCode | `AGENTS.md` (project root) | [docs/install/opencode.md](docs/install/opencode.md) |
+| GitHub Copilot CLI | `AGENTS.md` (project root) | [docs/install/copilot-cli.md](docs/install/copilot-cli.md) |
+
+## Quick install
+
+Claude Code (native skill):
 
 ```bash
 git clone https://github.com/leverj/claude-sprint ~/.claude/skills/sprint
 ```
 
-**Per-project** (only this repo):
+Other tools (clone once, link from each project):
 
 ```bash
-git clone https://github.com/leverj/claude-sprint .claude/skills/sprint
+git clone https://github.com/leverj/claude-sprint ~/sprint-workflow
+cd /path/to/your/project
+ln -s ~/sprint-workflow/AGENTS.md AGENTS.md   # or GEMINI.md, .cursor/rules/sprint.mdc, etc.
 ```
 
-Optionally, add the snippet from `claude-md-snippet.md` to your project's `CLAUDE.md` so Claude remembers the workflow in every session.
+On Windows, enable git symlinks (`git config --global core.symlinks true`, run as admin) or `cp` the file and re-copy on update.
 
 ## Updating
 
 ```bash
-cd ~/.claude/skills/sprint && git pull
+cd ~/.claude/skills/sprint && git pull   # or ~/sprint-workflow
 ```
 
 ## Quick Start
