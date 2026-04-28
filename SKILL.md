@@ -224,7 +224,9 @@ Parse the issue body to extract:
 
 For each phase listed in the Implementation Phases section:
 
-1. **Implement** the phase — write the code, following existing project patterns and conventions
+1. **Implement** the phase — write the code, following existing project patterns and conventions.
+
+   **Dependency safety gate**: Before editing any manifest file (`package.json`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `pom.xml`, `build.gradle`, etc.) or running any install/add command (`npm install`, `pnpm add`, `yarn add`, `pip install`, `cargo add`, `go get`, `mvn install -Dversion=`, etc.) that introduces a new dependency or changes a resolved version, run the [Dependency Safety Check](#dependency-safety-check). The check must complete with a clean pass, an accepted fallback substitution, or an explicit override before the manifest edit/install proceeds. Do not edit the manifest first and check afterward — the check gates the edit.
 2. **Test** — write or update tests that verify the acceptance criteria covered by this phase. Run the test suite to confirm.
 3. **Update the issue** — mark the phase checkbox as complete on GitHub:
    - Fetch current body: `gh issue view N --json body -q '.body'`
@@ -280,6 +282,16 @@ gh pr create --title "<concise title>" --body "Closes #N
 
 ## Test Plan
 <what tests were added/modified>
+
+## Dependency Safety
+<Render the verification log captured during the per-phase Dependency Safety Check. One row per package added or upgraded:
+  - `package@version` (final, after any fallback)
+  - Originally requested version (if different from final)
+  - Publish date
+  - Advisories checked (IDs or 'none')
+  - Fallback reason (if a substitution was applied)
+  - Override justification (if a hard-block was overridden)
+If no dependencies were added or upgraded in this PR, write 'No dependency changes.'>
 "
 ```
 
@@ -470,6 +482,148 @@ Tell the developer what was set up:
 - Whether `.dev/decisions/` was created (or "already exists")
 - The repo name and current authentication status
 - Remind them of available commands: `/sprint plan`, `/sprint pick`, `/sprint status`, `/sprint decide`, `/sprint refine`
+
+---
+
+## Dependency Safety Check
+
+**Purpose**: Before any sprint task adds or upgrades a third-party dependency, verify that the target version is not freshly published (supply-chain compromise window) and not subject to a known high/critical advisory. If unsafe, automatically redirect to the closest clean version.
+
+This check is invoked from the [Pick Command](#pick-command) per-phase loop. It runs **before** any manifest edit (`package.json`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `pom.xml`, `build.gradle`, etc.) and **before** any install/add command (`npm install`, `pnpm add`, `yarn add`, `pip install`, `cargo add`, `go get`, `mvn ... -Dversion=`, etc.).
+
+### Triggers
+
+Run the check when a phase implementation will:
+
+- Add a new dependency entry.
+- Update an existing dependency to a different version (including lockfile-only bumps that change the resolved version of a top-level dep).
+- Replace one package with another.
+
+A pure lockfile regeneration that resolves to the **same** versions does not trigger the check.
+
+### Supported ecosystems
+
+Fully supported in v1: **npm**, **PyPI**, **crates.io**, **Go modules**, **Maven Central**.
+
+If a manifest belongs to any other ecosystem (CocoaPods, Hex, NuGet, RubyGems, Composer, etc.), **hard-block** with the message: `Dependency safety check: ecosystem not supported. Override required to proceed.`
+
+### Caching
+
+Maintain an in-memory cache for the duration of the pick, keyed on `ecosystem:package:version`. Each entry stores the full check result: publish date, advisory list, install-script flags, and final verdict (pass / blocked-with-reason / accepted-fallback-target).
+
+- Steps 1, 2, and 4 (and the per-candidate re-checks inside Step 5's fallback walk) MUST consult the cache before making a network call. A hit returns the stored result without re-querying the registry or OSV.
+- The verification log (Step 7) reads from the same cache, so the PR body reflects exactly what was checked.
+- The cache lives only for the current pick — a fresh pick (or a new Claude session) starts empty. Do not persist it to disk.
+- Typosquat (Step 3) does not need the cache; it operates on the package name alone.
+
+### Step 1: Resolve publish date (7-day age guard)
+
+For the target `package@version`, look up the publish timestamp. If the publish date is **less than 7 days ago** from today, the version is blocked. Per-ecosystem recipes:
+
+- **npm**:
+  ```
+  npm view <pkg>@<version> time --json
+  ```
+  Use the entry keyed by the exact version string. (Falls back to `https://registry.npmjs.org/<pkg>` JSON, field `time.<version>`.)
+
+- **PyPI**:
+  ```
+  curl -s https://pypi.org/pypi/<pkg>/<version>/json
+  ```
+  Use `urls[0].upload_time_iso_8601` (or earliest of the `urls` array).
+
+- **crates.io**:
+  ```
+  curl -s https://crates.io/api/v1/crates/<pkg>/<version>
+  ```
+  Use `version.created_at`.
+
+- **Go modules**:
+  ```
+  curl -s https://proxy.golang.org/<module>/@v/<version>.info
+  ```
+  Use the `Time` field. List versions via `https://proxy.golang.org/<module>/@v/list`.
+
+- **Maven Central**:
+  ```
+  curl -s "https://search.maven.org/solrsearch/select?q=g:<group>+AND+a:<artifact>+AND+v:<version>&core=gav&rows=1&wt=json"
+  ```
+  Use `response.docs[0].timestamp` (epoch ms).
+
+If the lookup fails (network error, 404, malformed response), **fail closed** — hard-block with a remediation message naming the registry and command that failed.
+
+### Step 2: Advisory scan
+
+Query OSV.dev as the unified backend for advisories:
+
+```
+curl -s -X POST https://api.osv.dev/v1/query -H 'Content-Type: application/json' \
+  -d '{"package":{"name":"<pkg>","ecosystem":"<ECOSYSTEM>"},"version":"<version>"}'
+```
+
+Ecosystem strings: `npm`, `PyPI`, `crates.io`, `Go`, `Maven`.
+
+If the response includes any vulnerability with a `database_specific.severity` or CVSS score in the **HIGH** or **CRITICAL** range (or, when severity is missing, any vulnerability at all that affects this exact version), the version is blocked. Capture each vulnerability's `id`, `summary`, and reference URL for the report.
+
+If the OSV call fails, **fail closed**.
+
+### Step 3: Typosquat heuristic
+
+For new dependencies (not version bumps of an existing package), compute the Levenshtein distance between the requested package name and a list of popular packages on the same ecosystem. If distance ≤ 2 from a popular name **and** the requested name is not itself a popular name, hard-block with: `Possible typosquat: '<requested>' is distance N from popular package '<popular>'. Override required.`
+
+The popular-package seed list is a small static set per ecosystem (e.g., for npm: `react`, `lodash`, `express`, `axios`, `chalk`, `commander`, `moment`, `request`, `webpack`, `typescript`, `eslint`, `jest`, `vue`, `next`, `dotenv`). Treat the seed as illustrative — extend as needed when false positives or misses appear.
+
+### Step 4: Install-script check
+
+If the package declares install-time scripts, hard-block:
+
+- **npm**: `npm view <pkg>@<version> scripts --json` — block if any of `preinstall`, `install`, `postinstall` is set.
+- **PyPI**: block if the distribution includes a `setup.py` (sdist with executable setup, as opposed to a wheel-only release). Detect via the PyPI JSON `urls` array — if no entry has `packagetype == "bdist_wheel"`, treat as install-script risk.
+- **crates.io**: block if the crate declares a `build.rs` (check via the published crate metadata; if unverifiable, note as unknown and require override).
+- **Go modules**: no install scripts in the module system; skip.
+- **Maven Central**: skip; build plugins are scoped to the consuming project, not install-time.
+
+Override requires explicit justification recorded in the PR + issue comment.
+
+### Step 5: Clean-version fallback
+
+If Step 1, 2, 3, or 4 blocks the requested version, automatically search for a clean adjacent version:
+
+1. **Prefer fixed-in versions** (advisory-block only): If the OSV response includes `affected[].ranges` with `fixed` versions, walk them in ascending order. For each candidate, run Step 1 and Step 2 again. Return the **lowest** fixed-in version that passes both (i.e., is ≥ 7 days old and free of high/critical advisories).
+2. **Fall back to highest prior unaffected version**: If no fixed-in version passes (or none was listed), walk the registry's version list in **descending** order from the version immediately below the requested one. For each, run Step 1 and Step 2. Return the first version that passes both.
+3. **No clean version found**: If neither direction yields a passing candidate, hard-block and report the search trace (versions tried + reason each was rejected) so the developer can pick a different package.
+
+When a fallback is found, propose it to the developer with the reason, e.g.:
+
+```
+v2.3.4 is affected by GHSA-xxxx-yyyy (HIGH).
+Suggest v2.3.5 — fixed-in, published 14 days ago, no advisories.
+```
+
+The developer must confirm the substitution before the manifest is edited.
+
+### Step 6: Override flow
+
+A hard-block can be overridden, but only with explicit justification:
+
+1. The assistant explains exactly why the version was blocked.
+2. The developer types an override justification (free text, must be non-empty).
+3. The justification is recorded in **both** the PR body's "Dependency Safety" section and a comment on the issue:
+   ```
+   gh issue comment N --body "Dependency safety override: <pkg>@<version> — <justification>"
+   ```
+4. The phase proceeds.
+
+### Step 7: Record verification
+
+On success (clean pass or accepted fallback), append a row to an in-memory verification log for this branch. At PR time, the log is rendered into the PR body's "Dependency Safety" section (see [Step 8 of Pick Command](#step-8-push-and-create-pr)). Each row captures:
+
+- `package@version` (final, after any fallback)
+- Originally requested version (if different)
+- Publish date
+- Advisories checked (IDs or "none")
+- Fallback reason (if applicable)
+- Override justification (if applicable)
 
 ---
 
