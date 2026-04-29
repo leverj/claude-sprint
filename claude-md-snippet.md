@@ -22,3 +22,4 @@ Commands:
 - `/sprint pick` — claim a Ready item, branch, implement, PR
 - `/sprint decide` — record an architectural decision
 - `/sprint upgrade` — pull the latest version of the skill from origin
+- `/sprint help` — show all commands and subcommands

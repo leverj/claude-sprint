@@ -6,7 +6,7 @@ description: >
   refine (groom items), setup (bootstrap Project), upgrade (pull latest skill). Uses gh
   CLI for issues + Project items, and `.dev/decisions/` for ADRs.
 allowed-tools: Bash(gh *) Bash(git *) Bash(ls *) Bash(mkdir *) Bash(cat *) Read Write Edit Glob Grep Agent
-argument-hint: "<plan|pick|decide|status|refine|setup|upgrade> [arguments]"
+argument-hint: "<plan|pick|decide|status|refine|setup|upgrade|help> [arguments]"
 effort: high
 ---
 
@@ -61,6 +61,7 @@ Parse the first word of the user's arguments to determine the command:
 - **`refine`** → Go to [Refine Command](#refine-command)
 - **`setup`** → Go to [Setup Command](#setup-command)
 - **`upgrade`** → Go to [Upgrade Command](#upgrade-command)
+- **`help`** → Go to [Help Command](#help-command)
 
 If the first word doesn't match any command, treat the entire input as a plan description and go to [Plan Command](#plan-command).
 
@@ -1130,6 +1131,53 @@ Changes take effect on next /sprint invocation
 ```
 
 For MODE `dry-run`, replace "Upgraded" with "Would upgrade" and skip the "Files updated" section (just show the oneline log).
+
+---
+
+## Help Command
+
+**Purpose**: Print a short reference of all sprint commands and their subcommands. Takes no arguments; any text after `help` is ignored.
+
+Print verbatim:
+
+```
+/sprint commands
+
+  plan [description]              Create structured requirements (Issues + Project items).
+                                  Optional free-form description; otherwise interactive.
+
+  pick [N]                        Claim a Ready item and implement it phase by phase.
+                                  N = issue number; if omitted, lists Ready items.
+
+  refine [N]                      Groom a Backlog item into Ready: add acceptance criteria,
+                                  phases, risks, Priority, Size.
+                                  N = issue number; if omitted, lists Backlog.
+
+  status [all]                    Dashboard read from the Project board.
+                                  all = include other iterations and unscheduled items.
+
+  decide ["title"]                Record an architectural decision in .dev/decisions/.
+                                  Optional quoted title; otherwise interactive.
+
+  setup                           Discover/create the Project, configure fields, link the repo.
+                                  Idempotent — safe to re-run.
+
+  upgrade [<branch> | reset | check]
+                                  Pull the latest skill from origin.
+                                    (none)   pull whatever branch the skill is on
+                                    <name>   switch to a branch and pull (sticky until reset)
+                                    reset    return to default branch and pull
+                                    check    dry-run — show what would change
+
+  help                            Show this help.
+
+Examples:
+  /sprint plan
+  /sprint pick 42
+  /sprint status all
+  /sprint decide "Use PostgreSQL for event store"
+  /sprint upgrade feat/some-branch
+```
 
 ---
 

@@ -78,6 +78,7 @@ After `/sprint setup`, open the Project's **Workflows** settings page (link is p
 | `/sprint refine [N]` | Take a Backlog item and add structured acceptance criteria, phases, risks, Priority, and Size — moves it to Status: Ready. |
 | `/sprint setup` | Discover or create a GitHub Project, configure Team Planning fields, link this repo, persist `.dev/sprint-config.json`. |
 | `/sprint upgrade [branch\|reset\|check]` | Pull the latest skill from origin. Optional branch arg switches branches (sticky until reset). |
+| `/sprint help` | Show all commands and subcommands with short descriptions. |
 
 ## How It Works
 
