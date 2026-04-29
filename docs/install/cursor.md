@@ -24,6 +24,16 @@ Text after `run sprint:` is `<USER REQUEST>`. `<SKILL DIR>` is the rule-file's r
 
 ## Update
 
+Recommended (from inside any project that uses the skill, in Cursor's chat):
+
+```
+run sprint: upgrade
+```
+
+See [Upgrade Command](../../SKILL.md#upgrade-command) for branch switching (`upgrade <branch>`, `upgrade reset`, `upgrade check`).
+
+Manual fallback:
+
 ```bash
 cd ~/sprint-workflow && git pull
 ```

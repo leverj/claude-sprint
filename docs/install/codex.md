@@ -23,6 +23,16 @@ Text after `run sprint:` is `<USER REQUEST>`. `<SKILL DIR>` is the symlink targe
 
 ## Update
 
+Recommended (from inside any project that uses the skill):
+
+```bash
+codex "run sprint: upgrade"
+```
+
+See [Upgrade Command](../../SKILL.md#upgrade-command) for branch switching (`upgrade <branch>`, `upgrade reset`, `upgrade check`).
+
+Manual fallback:
+
 ```bash
 cd ~/sprint-workflow && git pull
 ```

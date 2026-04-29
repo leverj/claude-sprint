@@ -23,6 +23,16 @@ The text after `run sprint:` is the `<USER REQUEST>`. `<SKILL DIR>` is the direc
 
 ## Update
 
+Recommended (from inside any project that uses the skill):
+
+```bash
+copilot "run sprint: upgrade"
+```
+
+See [Upgrade Command](../../SKILL.md#upgrade-command) for branch switching (`upgrade <branch>`, `upgrade reset`, `upgrade check`).
+
+Manual fallback:
+
 ```bash
 cd ~/sprint-workflow && git pull
 ```

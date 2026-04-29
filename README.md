@@ -1,6 +1,6 @@
 # claude-sprint
 
-A scrum-like development workflow that runs across multiple AI coding tools. Requirements live as structured GitHub Issues, decisions are recorded as ADRs in the repo, and any developer can pick up where someone left off.
+A scrum-aligned development workflow on top of **GitHub Projects v2**, runnable across multiple AI coding tools. Requirements live as structured GitHub Issues; sprint state (Status, Priority, Size, Iteration) lives on a Project board configured per GitHub's "Team Planning" template. Architectural decisions are recorded as ADRs in the repo. Any developer can pick up where someone left off.
 
 ## Prerequisites
 
@@ -41,6 +41,17 @@ On Windows, enable git symlinks (`git config --global core.symlinks true`, run a
 
 ## Updating
 
+From inside any project that uses the skill:
+
+```
+/sprint upgrade                          # pull latest on current branch
+/sprint upgrade feat/some-branch         # switch to a branch (e.g., to test a PR)
+/sprint upgrade reset                    # return to default branch (master/main)
+/sprint upgrade check                    # dry-run; show what would change
+```
+
+Or do it manually:
+
 ```bash
 cd ~/.claude/skills/sprint && git pull   # or ~/sprint-workflow
 ```
@@ -48,22 +59,26 @@ cd ~/.claude/skills/sprint && git pull   # or ~/sprint-workflow
 ## Quick Start
 
 ```
-/sprint setup          # Bootstrap labels on your GitHub repo
-/sprint plan           # Create structured requirements as GitHub Issues
-/sprint pick           # Claim an issue and implement it
-/sprint status         # See what's in-progress, ready, and needs work
+/sprint setup          # Discover/create the Project, configure fields, link this repo
+/sprint plan           # Create structured requirements as GitHub Issues + Project items
+/sprint pick           # Claim an item from the board and implement it
+/sprint status         # Dashboard of the current iteration
 ```
+
+After `/sprint setup`, open the Project's **Workflows** settings page (link is printed at the end of setup) and enable: *Auto-add to project*, *Item closed → Done*, *Pull request opened → In Review*, *Pull request merged → Done*. These are UI-only toggles GitHub does not expose via API.
 
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
-| `/sprint plan` | Discuss and create one or more structured GitHub Issues with acceptance criteria, implementation phases, and risk assessment |
-| `/sprint pick [N]` | List available issues, claim one, create a branch, implement phase by phase, create a PR |
-| `/sprint decide ["title"]` | Record an architectural decision in `.dev/decisions/`, cross-link to GitHub Issues |
-| `/sprint status` | Dashboard of in-progress, ready-to-pick, needs-refinement, recently closed, open PRs, and decisions |
-| `/sprint refine [N]` | Take a rough issue and add structured acceptance criteria and phases to make it implementable |
-| `/sprint setup` | Bootstrap sprint labels and the `.dev/decisions/` directory |
+| `/sprint plan` | Discuss and create one or more structured GitHub Issues with acceptance criteria, phases, and risks. Adds them to the Project with Status / Priority / Size set, optionally to an iteration. |
+| `/sprint pick [N]` | List available items from the board, claim one, create a branch, implement phase by phase, create a PR. Status: Ready → In Progress → In Review. |
+| `/sprint decide ["title"]` | Record an architectural decision in `.dev/decisions/`, cross-link to GitHub Issues. |
+| `/sprint status [all]` | Dashboard read from the Project board. Shows current iteration prominently. `status all` includes other iterations and unscheduled items. |
+| `/sprint refine [N]` | Take a Backlog item and add structured acceptance criteria, phases, risks, Priority, and Size — moves it to Status: Ready. |
+| `/sprint setup` | Discover or create a GitHub Project, configure Team Planning fields, link this repo, persist `.dev/sprint-config.json`. |
+| `/sprint upgrade [branch\|reset\|check]` | Pull the latest skill from origin. Optional branch arg switches branches (sticky until reset). |
+| `/sprint help` | Show all commands and subcommands with short descriptions. |
 
 ## How It Works
 
@@ -76,9 +91,17 @@ cd ~/.claude/skills/sprint && git pull   # or ~/sprint-workflow
 - **Implementation Phases** — ordered checkboxes, each independently verifiable
 - **Risk Assessment** — technical risks, dependencies, unknowns
 
+### Sprint state lives on the Project board
+
+State that scrum tools track — Status (Backlog / Ready / In Progress / In Review / Done), Priority (P0 / P1 / P2), Size (XS / S / M / L / XL), Iteration — are **GitHub Project fields**, not labels. The skill reads and writes those fields directly via `gh project`.
+
+The first `/sprint setup` either links this repo to an existing Project or creates a new one named after the repo. Choice is persisted in `.dev/sprint-config.json` (`project_number` only — names are renameable in the GitHub UI without breaking anything).
+
+The Iteration field is created **lazily** the first time someone names a sprint; until then, items live in an "infinite sprint" (no iteration assigned).
+
 ### Concurrency via GitHub Assignment
 
-When a developer runs `/sprint pick`, Claude assigns the issue to them on GitHub before starting work. Other developers running `/sprint pick` will see that issue as taken. GitHub assignment is the lock — no file-based coordination needed.
+When a developer runs `/sprint pick`, the skill assigns the issue to them on GitHub before starting work and moves the Project Status to `In Progress`. Other developers see the item as taken. GitHub assignment is the lock — no file-based coordination needed.
 
 ### Decisions as ADRs
 
@@ -88,28 +111,24 @@ When a developer runs `/sprint pick`, Claude assigns the issue to them on GitHub
 
 `/sprint pick` doesn't implement everything at once. It works through the Implementation Phases defined on the issue:
 
-1. Implement the phase
+1. Implement the phase (with a [Dependency Safety Check](SKILL.md#dependency-safety-check) gate before any new dependency is added)
 2. Write/update tests
 3. Update the phase checkbox on GitHub
 4. Move to next phase
 
-After all phases are complete, Claude presents the changes for review. **Code is never committed, pushed, or turned into a PR without explicit developer approval.** The developer gets a chance to review the diff, adjust the commit message, and confirm before anything leaves their local machine.
+After all phases are complete, the skill presents the changes for review. **Code is never committed, pushed, or turned into a PR without explicit developer approval.** The developer reviews the diff, adjusts the commit message if needed, and confirms before anything leaves the local machine.
 
 If a session ends mid-work, the next developer can see which phases are checked off.
 
-## Label Convention
+## Labels (small set)
+
+Labels are intentionally minimal — Status / Priority / Size live as Project fields, not labels.
 
 | Label | Meaning |
 |-------|---------|
-| `type:feature` | New functionality |
-| `type:bug` | Something broken |
-| `type:refactor` | Internal improvement |
-| `priority:high` | High priority |
-| `priority:med` | Medium priority |
-| `priority:low` | Low priority |
-| `ready` | Refined, has acceptance criteria, implementable |
-| `needs-refinement` | Logged but needs structured criteria before implementation |
-| `in-progress` | Currently being worked on (assigned to someone) |
+| `type:feature` | New functionality (drives `feat/` branch prefix) |
+| `type:bug` | Something broken (drives `bug/` branch prefix) |
+| `type:refactor` | Internal improvement (drives `refactor/` branch prefix) |
 
 `package:*` labels are created on-the-fly for monorepo projects (e.g., `package:ui`, `package:server`).
 
