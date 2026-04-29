@@ -911,7 +911,31 @@ gh project field-create <PROJECT_NUMBER> --owner <OWNER> \
   --single-select-options "Backlog,Ready,In Progress,In Review,Done"
 ```
 
-If a field exists but is missing required options, add them via `gh api graphql` (the `gh project field-edit` surface may not cover option additions in all gh versions).
+If a field exists but is missing required options, modify it via `gh api graphql` (`gh project field-edit` does not exist in current gh versions).
+
+**Modifying the auto-created Status field**: GitHub creates a Status field on every new Project with default options `Todo / In Progress / Done`. This field is built-in and **cannot be deleted** — `gh project field-delete` returns `Only custom fields can be deleted`. Replace its options via the `updateProjectV2Field` mutation:
+
+```
+gh api graphql -f query='
+mutation($fieldId: ID!) {
+  updateProjectV2Field(input: {
+    fieldId: $fieldId
+    singleSelectOptions: [
+      {name: "Backlog",     color: GRAY,   description: "Not yet refined"}
+      {name: "Ready",       color: GREEN,  description: "Refined and implementable"}
+      {name: "In Progress", color: YELLOW, description: "Currently being worked on"}
+      {name: "In Review",   color: PURPLE, description: "PR open"}
+      {name: "Done",        color: BLUE,   description: "Completed"}
+    ]
+  }) {
+    projectV2Field {
+      ... on ProjectV2SingleSelectField { id name options { id name } }
+    }
+  }
+}' -f fieldId="<STATUS_FIELD_ID>"
+```
+
+This mutation **replaces** the entire option list (it does not merge). On a freshly created Project with zero items, this is safe — Todo simply goes away. On an existing Project where teammates have items at `Todo` or other custom options, **include those extras in the replacement list** to preserve them and the items they're assigned to.
 
 Do not delete or rename existing extra options — teams may have customized.
 
