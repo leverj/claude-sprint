@@ -156,6 +156,14 @@ If the requirement is small and self-contained, skip the decomposition step and 
 
 Note dependencies between issues in the Notes section of each issue body (e.g., "Depends on #42 for OAuth token flow").
 
+**Parent issue grouping (default ON)**: After confirming the decomposition (or before creating a single issue), decide on parent/sub-issue structure:
+
+- **Multiple decomposed issues** → create a **parent issue** that holds the umbrella user story; each decomposed piece becomes a sub-issue. Propose the parent title and confirm with the developer.
+- **Single new issue** → check whether it belongs under an existing open issue. Surface candidates with `gh issue list --state open --json number,title --limit 100` and ask: "Attach as a sub-issue under an existing issue (provide #), create a new parent, or file standalone?"
+- **Default to grouping**: prefer attaching under a parent (existing or new) over filing standalone. File standalone only when the developer confirms the issue genuinely doesn't relate to other open work.
+
+Capture per-issue: `PARENT` = `{existing-issue-number}` | `{new-parent}` | `none`. Parents are created first in Step 6 so their node IDs are available when linking children.
+
 ### Step 2: Structure each requirement
 
 For each requirement discussed, read the template from `<SKILL DIR>/templates/issue-body.md` and fill it in:
@@ -225,6 +233,8 @@ For each issue, decide initial Status:
 
 ### Step 6: Create each issue and add to Project
 
+**Order**: create any new parent issues **first**, capture their node IDs, then create children and link them. Existing parents need only a node-ID lookup, not creation.
+
 For each requirement, in order:
 
 A. **Create the GitHub Issue**:
@@ -236,7 +246,11 @@ gh issue create \
   --label "type:<x>[,package:<y>]"
 ```
 
-Capture `ISSUE_URL` and `ISSUE_NUMBER` from the response.
+Capture `ISSUE_URL` and `ISSUE_NUMBER` from the response. Then capture the GraphQL node ID (needed for sub-issue linking):
+
+```
+ISSUE_NODE_ID = gh issue view <ISSUE_NUMBER> --json id -q .id
+```
 
 B. **Add the issue to the Project explicitly** (do not rely on the auto-add workflow — it may not be enabled, and it fires async):
 
@@ -274,15 +288,33 @@ gh project item-edit \
   --iteration-id <TARGET_ITERATION_ID>
 ```
 
+D. **Link to parent issue** (if `PARENT` for this issue is not `none`):
+
+If `PARENT` refers to an existing issue number, look up its node ID once: `PARENT_NODE_ID = gh issue view <PARENT_NUMBER> --json id -q .id`. If `PARENT` was a new parent created earlier in this loop, use its captured `ISSUE_NODE_ID`.
+
+```
+gh api graphql -f query='
+  mutation($parentId: ID!, $childId: ID!) {
+    addSubIssue(input: { issueId: $parentId, subIssueId: $childId }) {
+      issue { number }
+      subIssue { number }
+    }
+  }' -f parentId="$PARENT_NODE_ID" -f childId="$ISSUE_NODE_ID"
+```
+
+If the mutation fails (the sub-issues feature is not enabled on this repo, or the gh/GraphQL surface differs), surface the error clearly and fall back to recording `Parent: #<PARENT_NUMBER>` in the child's issue body Notes section. Do not silently skip.
+
 ### Step 7: Summary
 
-After all issues are created, present a summary table:
+After all issues are created, present a summary table. Indent sub-issues under their parents to show hierarchy:
 
 ```
 Created N issues:
-  #42  Feed freezes on background return     [bug, P0, M, Ready, Sprint 3]
-  #43  Search filter support                 [feature, P1, L, Ready, Sprint 3]
-  #44  Artist social links                   [feature, P2, S, Backlog]
+  #41  Social login                          [feature, P1, L, Ready, Sprint 3]   (parent)
+    └ #42  OAuth provider integration        [feature, P1, M, Ready, Sprint 3]
+    └ #43  Account linking flow              [feature, P1, M, Ready, Sprint 3]
+    └ #44  Sign-in UI                        [feature, P1, S, Ready, Sprint 3]
+  #45  Artist social links                   [feature, P2, S, Backlog]           (standalone)
 
 Project: https://github.com/<owner>/projects/<N>
 ```
@@ -745,6 +777,18 @@ E. **Notes** — capture context.
 F. **Type label** — if missing, ask: feature / bug / refactor. `gh issue edit N --add-label "type:<x>"`.
 G. **Priority** — show current value (or "unset") and ask: "Keep / change to P0 / P1 / P2?"
 H. **Size** — show current value and ask: "Keep / change to XS / S / M / L / XL?"
+I. **Parent linkage** — read current parent via:
+
+   ```
+   gh api graphql -f query='query($owner:String!,$repo:String!,$number:Int!){
+     repository(owner:$owner,name:$repo){issue(number:$number){parent{number title}}}
+   }' -f owner=<OWNER> -f repo=<REPO_NAME> -F number=<N> --jq '.data.repository.issue.parent'
+   ```
+
+   Show current value (parent issue number/title, or "standalone") and ask: "Keep / attach to existing # / create new parent / make standalone?"
+   - If attaching: look up the parent's node ID, look up this issue's node ID, run the `addSubIssue` mutation from Plan Step 6D.
+   - If detaching: run the equivalent `removeSubIssue` mutation.
+   - **Default to grouping** consistent with `plan` — only choose "standalone" when the issue genuinely doesn't relate to other open work.
 
 Always **show the current value and ask** — don't silently overwrite or silently keep.
 
