@@ -1,20 +1,24 @@
 ---
 name: sprint
 description: >
-  Scrum-like development workflow using GitHub Issues. Commands: plan (create requirements),
-  pick (claim & implement), decide (record decisions), status (dashboard), refine (groom issues),
-  setup (bootstrap labels). Uses gh CLI for issue management and .dev/decisions/ for ADRs.
+  Scrum-aligned development workflow on top of GitHub Projects v2. Commands: plan (create
+  requirements), pick (claim & implement), decide (record decisions), status (dashboard),
+  refine (groom items), setup (bootstrap Project), upgrade (pull latest skill). Uses gh
+  CLI for issues + Project items, and `.dev/decisions/` for ADRs.
 allowed-tools: Bash(gh *) Bash(git *) Bash(ls *) Bash(mkdir *) Bash(cat *) Read Write Edit Glob Grep Agent
-argument-hint: "<plan|pick|decide|status|refine|setup> [arguments]"
+argument-hint: "<plan|pick|decide|status|refine|setup|upgrade> [arguments]"
 effort: high
 ---
 
 # Sprint — Development Workflow Skill
 
-You manage a scrum-like development workflow using GitHub Issues as the single source of truth for requirements, assignment, and tracking. Architectural decisions are stored in `.dev/decisions/` in the repo.
+You manage a scrum-aligned development workflow on top of **GitHub Projects v2**. Issues are still where requirements live; the Project board is where state lives. Architectural decisions are stored in `.dev/decisions/` in the repo.
 
 **Key principles:**
-- GitHub Issues are requirements. Assignment on GitHub is the concurrency lock.
+- GitHub Issues are the requirement (User Story, Acceptance Criteria, Implementation Phases, Risk).
+- The GitHub Project (one per repo or one per team) is the board. **Status, Priority, Size, and Iteration are Project fields, not labels.** This is GitHub's published "Team Planning" template; we use it verbatim.
+- Labels are reserved for `type:*` (drives branch naming) and `package:*` (monorepo filtering). Nothing else.
+- Assignment on the GitHub Issue is the concurrency lock.
 - Acceptance criteria use WHEN/THEN/SHALL format for testability.
 - Implementation is phased — implement, test, and verify each phase before moving on.
 - Decisions capture the *why* alongside the *what*.
@@ -27,7 +31,7 @@ The skill templates are in the `templates/` directory and label definitions in `
 This workflow is tool-agnostic. Two placeholders appear throughout:
 
 - **`<USER REQUEST>`** — the developer's invocation arguments (e.g., `pick 2`, `plan add OAuth`, or a free-form description).
-- **`<SKILL DIR>`** — the absolute path to the directory containing this `SKILL.md` (used to locate `templates/` and `setup/labels.json`).
+- **`<SKILL DIR>`** — the absolute path to the directory containing this `SKILL.md` (used to locate `templates/`, `setup/labels.json`, and the skill's git checkout for `upgrade`).
 
 How each tool resolves them:
 
@@ -56,14 +60,15 @@ Parse the first word of the user's arguments to determine the command:
 - **`status`** → Go to [Status Command](#status-command)
 - **`refine`** → Go to [Refine Command](#refine-command)
 - **`setup`** → Go to [Setup Command](#setup-command)
+- **`upgrade`** → Go to [Upgrade Command](#upgrade-command)
 
 If the first word doesn't match any command, treat the entire input as a plan description and go to [Plan Command](#plan-command).
 
 ---
 
-## Ensure Setup
+## Resolve Project Context
 
-**Every command must run these checks first before doing anything else.** Stop with a clear error message if any check fails.
+**Every command except `setup` and `upgrade` must resolve Project context first before doing anything else.** Stop with a clear error message if any check fails.
 
 ### Step 1: Verify prerequisites
 
@@ -71,29 +76,57 @@ Run these checks in parallel:
 
 1. `gh auth status` — if this fails, tell the user: "GitHub CLI is not authenticated. Run `gh auth login` first."
 2. `git rev-parse --is-inside-work-tree` — if this fails, tell the user: "Not inside a git repository."
-3. `gh repo view --json nameWithOwner -q .nameWithOwner` — if this fails, tell the user: "No GitHub remote found. Add one with `git remote add origin <url>`." Save the result as `REPO` (e.g., `owner/repo`) for use in later API calls.
+3. `gh repo view --json nameWithOwner -q .nameWithOwner` — if this fails, tell the user: "No GitHub remote found. Add one with `git remote add origin <url>`." Save the result as `REPO` (e.g., `owner/repo`).
 
-### Step 2: Ensure labels exist
+### Step 2: Read sprint config
 
-Run: `gh label list --search "type:" --limit 1 --json name -q '.[0].name'`
+Read `.dev/sprint-config.json`. Expected shape:
 
-If no result is returned, the sprint labels haven't been created yet. Read the label definitions from `<SKILL DIR>/setup/labels.json` and create each one:
-
-```
-gh label create "<name>" --color "<color>" --description "<description>" --force
+```json
+{ "project_number": 7, "project_owner": "leverj" }
 ```
 
-Use `--force` so this is idempotent (updates existing labels rather than failing).
+If the file does not exist, tell the user: "No sprint config found. Run `/sprint setup` first to create or link a GitHub Project for this repo." Stop.
 
-### Step 3: Ensure decisions directory
+### Step 3: Resolve Project field IDs (cached for this command)
 
-Run: `mkdir -p .dev/decisions`
+Run once and cache for the duration of the command:
+
+```
+gh project field-list <PROJECT_NUMBER> --owner <PROJECT_OWNER> --format json
+```
+
+Extract:
+
+- `STATUS_FIELD_ID` and option IDs for `Backlog`, `Ready`, `In Progress`, `In Review`, `Done`
+- `PRIORITY_FIELD_ID` and option IDs for `P0`, `P1`, `P2`
+- `SIZE_FIELD_ID` and option IDs for `XS`, `S`, `M`, `L`, `XL`
+- `ITERATION_FIELD_ID` if it exists (may be `None` until the first sprint is created lazily)
+- `PROJECT_ID` — the GraphQL node ID of the Project itself (needed for `gh project item-edit`). Get via `gh project view <PROJECT_NUMBER> --owner <PROJECT_OWNER> --format json | jq .id`.
+- `PROJECT_TITLE` — the human-readable title (may differ from repo name if the user linked an existing Project). From the same `gh project view` response: `jq .title`.
+- `OWNER_TYPE` — `Organization` or `User`. Get via `gh api graphql -f query='query($login:String!){repositoryOwner(login:$login){__typename}}' -f login=<PROJECT_OWNER> --jq '.data.repositoryOwner.__typename'`. Used to construct correct Project URLs (`/orgs/<OWNER>/projects/<N>` for orgs, `/users/<OWNER>/projects/<N>` for users — the bare `/<OWNER>/projects/<N>` form only redirects for orgs).
+
+If any required Status/Priority/Size field or option is missing, tell the user: "Project fields are misconfigured. Run `/sprint setup` to repair." Stop.
+
+### Step 4: Determine current iteration (if Iteration field exists)
+
+If `ITERATION_FIELD_ID` is set:
+
+- Read iteration configuration from the field-list response: `configuration.iterations` (active) and `configuration.completedIterations`.
+- `CURRENT_ITERATION` = the iteration whose `startDate` ≤ today < `startDate + duration`.
+- If none matches, `CURRENT_ITERATION_ID = None`. The skill treats "no current iteration" as the "infinite sprint" / backlog-of-Ready case.
+
+If `ITERATION_FIELD_ID` is `None`, set `CURRENT_ITERATION_ID = None`.
 
 ---
 
 ## Plan Command
 
-**Purpose**: Interactive session to refine and create one or more structured GitHub Issues.
+**Purpose**: Interactive session to refine and create one or more structured GitHub Issues, add them to the Project, and set their Status / Priority / Size fields.
+
+### Step 0: Resolve Project context
+
+Run [Resolve Project Context](#resolve-project-context).
 
 ### Step 1: Discuss and decompose requirements
 
@@ -113,120 +146,261 @@ Present the proposed breakdown to the developer and discuss each piece:
    - Who is affected?
    - What are the edge cases and constraints?
    - Is this a feature, bug fix, or refactor?
-   - What priority — high, medium, or low?
+   - **Priority**: P0 / P1 / P2 (P0 = blocking; P1 = important; P2 = nice-to-have).
+   - **Size**: XS / S / M / L / XL (rough effort estimate).
    - Are there dependencies between this and the other pieces?
 3. **Get confirmation**: Don't create any issues until the developer confirms the full set. They may want to merge, split, reprioritize, or defer some pieces.
 
 If the requirement is small and self-contained, skip the decomposition step and discuss it directly.
 
-Note dependencies between issues in the Notes section of each issue (e.g., "Depends on #42 for OAuth token flow").
+Note dependencies between issues in the Notes section of each issue body (e.g., "Depends on #42 for OAuth token flow").
 
 ### Step 2: Structure each requirement
 
 For each requirement discussed, read the template from `<SKILL DIR>/templates/issue-body.md` and fill it in:
 
-- **User Story**: Write in "As a [role], I want [capability] so that [benefit]" format.
-- **Acceptance Criteria**: Write each criterion using the WHEN/THEN/SHALL format. Cover:
-  - Normal/happy path flows
-  - Edge cases
-  - Error handling
-  - Persistence expectations (if applicable)
-  - UI/UX behavior (if applicable)
-- **Implementation Phases**: Break the work into 2-4 ordered phases. Each phase should be independently testable. Don't make phases too granular — each should represent a meaningful chunk of work.
-- **Risk Assessment**: Note technical risks, dependencies on other issues or services, and unknowns.
-- **Notes**: Add any context from the discussion, links to related decisions, or references.
+- **User Story**: "As a [role], I want [capability] so that [benefit]" format.
+- **Acceptance Criteria**: WHEN/THEN/SHALL format. Cover happy path, edge cases, error handling, persistence (if applicable), UI/UX behavior (if applicable).
+- **Implementation Phases**: Break into 2–4 ordered phases. Each phase independently testable. Don't be too granular — each should represent a meaningful chunk.
+- **Risk Assessment**: Technical risks, dependencies, unknowns.
+- **Notes**: Context, links to decisions, references.
 
-### Step 3: Select labels
+### Step 3: Iteration assignment (explicit)
 
-For each issue, determine labels from the discussion:
+Ask the developer: "Assign these to an iteration?
+1. Current iteration (if one exists)
+2. A new iteration (give name + start date + duration)
+3. None — they'll live in the backlog
+4. A specific existing iteration"
 
-- **Type** (exactly one): `type:feature`, `type:bug`, or `type:refactor`
-- **Priority** (exactly one): `priority:high`, `priority:med`, or `priority:low`
-- **Package** (optional, for monorepos): If the project is a monorepo and the requirement targets a specific package, create a `package:<name>` label if it doesn't exist: `gh label create "package:<name>" --color "c5def5" --description "Package: <name>" --force`
-- **Readiness**: Add `ready` if the requirement is fully refined. Add `needs-refinement` if it still has unknowns that need resolving.
+Capture `TARGET_ITERATION_ID` per issue. The default is **none** (no iteration set) — that's the "infinite sprint" case.
 
-### Step 4: Milestone (optional)
-
-If the developer mentions a sprint name or release target, check for an existing milestone:
+**Lazy iteration field creation**: If the developer asks to assign to an iteration but `ITERATION_FIELD_ID` is `None`, create the field first:
 
 ```
-gh api repos/{REPO}/milestones --jq '.[] | select(.title=="<name>") | .number'
+gh api graphql -f query='
+  mutation($projectId: ID!) {
+    createProjectV2Field(input: {
+      projectId: $projectId
+      dataType: ITERATION
+      name: "Iteration"
+    }) { projectV2Field { ... on ProjectV2IterationField { id } } }
+  }' -f projectId="$PROJECT_ID"
 ```
 
-If none exists, create one:
+Re-fetch field-list to capture the new `ITERATION_FIELD_ID`.
+
+**Lazy iteration creation**: If the developer named a new iteration that doesn't exist yet, create it via raw GraphQL:
 
 ```
-gh api repos/{REPO}/milestones -f title="<name>"
+gh api graphql -f query='
+  mutation($fieldId: ID!, $iterations: [ProjectV2IterationFieldIterationInput!]!) {
+    updateProjectV2IterationField(input: {
+      iterationFieldId: $fieldId
+      iterations: $iterations
+    }) { iterationField { ... } }
+  }' \
+  -f fieldId="$ITERATION_FIELD_ID" \
+  -f iterations='[{"startDate":"YYYY-MM-DD","duration":14,"title":"Sprint N"}]'
 ```
 
-### Step 5: Create issues
+If the GraphQL mutation surface differs in your gh version, fall back to instructing the user to create the iteration in the UI and re-run `/sprint plan`. Surface the failure clearly; do not silently skip.
 
-For each requirement, create a GitHub Issue:
+### Step 4: Determine labels (small set)
+
+For each issue:
+
+- **Type** (exactly one): `type:feature`, `type:bug`, or `type:refactor`. Drives branch naming during `pick`.
+- **Package** (optional, monorepos): If the project is a monorepo and the requirement targets a specific package, create a `package:<name>` label if it doesn't exist: `gh label create "package:<name>" --color "c5def5" --description "Package: <name>" --force`.
+
+**Do not create or use** `priority:*`, `ready`, `needs-refinement`, or `in-progress` labels. Those concepts live in the Project's Status / Priority fields now.
+
+### Step 5: Definition of Ready check
+
+For each issue, decide initial Status:
+
+- If acceptance criteria, phases, risks, **Priority, and Size** were all discussed and set → `Status: Ready`.
+- If any of those are missing or the developer said "I haven't fully thought it through" → `Status: Backlog`. The issue can be picked up later via `/sprint refine`.
+
+### Step 6: Create each issue and add to Project
+
+For each requirement, in order:
+
+A. **Create the GitHub Issue**:
 
 ```
-gh issue create --title "<concise title>" --body "<structured body>" --label "<label1>,<label2>,..." [--milestone "<name>"]
+gh issue create \
+  --title "<concise title>" \
+  --body "<structured body>" \
+  --label "type:<x>[,package:<y>]"
 ```
 
-### Step 6: Summary
+Capture `ISSUE_URL` and `ISSUE_NUMBER` from the response.
+
+B. **Add the issue to the Project explicitly** (do not rely on the auto-add workflow — it may not be enabled, and it fires async):
+
+```
+gh project item-add <PROJECT_NUMBER> --owner <PROJECT_OWNER> --url <ISSUE_URL> --format json
+```
+
+Capture `ITEM_ID` from the response (parse `.id`).
+
+C. **Set field values** with `gh project item-edit`:
+
+```
+# Status
+gh project item-edit \
+  --id <ITEM_ID> --project-id <PROJECT_ID> \
+  --field-id <STATUS_FIELD_ID> \
+  --single-select-option-id <STATUS_OPTIONS["Ready" or "Backlog"]>
+
+# Priority
+gh project item-edit \
+  --id <ITEM_ID> --project-id <PROJECT_ID> \
+  --field-id <PRIORITY_FIELD_ID> \
+  --single-select-option-id <PRIORITY_OPTIONS["P0"|"P1"|"P2"]>
+
+# Size
+gh project item-edit \
+  --id <ITEM_ID> --project-id <PROJECT_ID> \
+  --field-id <SIZE_FIELD_ID> \
+  --single-select-option-id <SIZE_OPTIONS["XS"|"S"|"M"|"L"|"XL"]>
+
+# Iteration (only if user assigned one)
+gh project item-edit \
+  --id <ITEM_ID> --project-id <PROJECT_ID> \
+  --field-id <ITERATION_FIELD_ID> \
+  --iteration-id <TARGET_ITERATION_ID>
+```
+
+### Step 7: Summary
 
 After all issues are created, present a summary table:
 
 ```
 Created N issues:
-  #42  Feed freezes on background return     [type:bug, priority:high, ready]
-  #43  Search filter support                 [type:feature, priority:med, ready]
-  #44  Artist social links                   [type:feature, priority:low, needs-refinement]
+  #42  Feed freezes on background return     [bug, P0, M, Ready, Sprint 3]
+  #43  Search filter support                 [feature, P1, L, Ready, Sprint 3]
+  #44  Artist social links                   [feature, P2, S, Backlog]
+
+Project: https://github.com/<owner>/projects/<N>
 ```
 
 ---
 
 ## Pick Command
 
-**Purpose**: Claim a GitHub Issue and implement it phase by phase.
+**Purpose**: Claim a Project item and implement it phase by phase.
 
 Arguments after `pick` are optional:
-- `/sprint pick` — show available issues and let the developer choose
+- `/sprint pick` — show available items and let the developer choose
 - `/sprint pick 42` — directly pick issue #42
+
+### Step 0: Resolve Project context
+
+Run [Resolve Project Context](#resolve-project-context).
 
 ### Step 1: Show available work
 
-Run these in parallel:
+If an issue number was provided as argument, skip this display and go directly to Step 2.
 
-1. `gh issue list --label ready --no-assignee --json number,title,labels --limit 20` — available work
-2. `gh issue list --assignee @me --state open --json number,title,labels,assignees --limit 10` — already assigned to current user
+Otherwise, fetch all Project items (single call):
 
-Present the results:
+```
+gh project item-list <PROJECT_NUMBER> --owner <PROJECT_OWNER> --format json --limit 200
+```
+
+Slice locally. The sectioning depends on whether a current iteration exists:
+
+**If `CURRENT_ITERATION_ID` is set** (a sprint is active):
+
+- `YOUR_WORK` — Status=`In Progress` AND assignee includes current user
+- `READY_NOW` — Status=`Ready` AND no assignee AND Iteration=CURRENT_ITERATION_ID
+- `READY_UNSCHEDULED` — Status=`Ready` AND no assignee AND Iteration is unset
+- `READY_FUTURE` — Status=`Ready` AND no assignee AND Iteration is set AND ≠ CURRENT_ITERATION_ID
+- `BACKLOG` — Status=`Backlog` (or unset). Show only as a hint, not as pickable.
+
+**If `CURRENT_ITERATION_ID` is None** (infinite-sprint case):
+
+- `YOUR_WORK` — Status=`In Progress` AND assignee includes current user
+- `READY` — Status=`Ready` AND no assignee (flat, no iteration sub-grouping)
+- `BACKLOG` — Status=`Backlog` (or unset). Show only as a hint.
+
+Sort within each section by Priority (P0 first), then Size (smallest first).
+
+Present (sprint-active example):
 
 ```
 YOUR WORK
-  #42  Feed freeze fix          [type:bug, priority:high, in-progress]
+  #42  Feed freeze fix          [bug, P0, M]    In Progress
 
-AVAILABLE TO PICK
-  #43  Search filters           [type:feature, priority:med]
-  #44  Artist social links      [type:feature, priority:low]
+READY — Sprint 3 (current iteration, ends in 6 days)
+  #43  Search filter support    [feature, P1, L]
+  #44  OAuth flow               [feature, P1, M]
+
+READY — unscheduled (not in any iteration)
+  #50  Cleanup old fixtures     [refactor, P2, S]
+
+READY — other iterations
+  #45  Account linking          [feature, P2, S]   Sprint 4
+
+BACKLOG (needs refinement — run /sprint refine first)
+  #46  Performance work
 ```
 
-If an issue number was provided as argument, skip this display and go directly to Step 2.
+If sections are empty, show "(none)" rather than omitting.
 
-### Step 2: Claim the issue
+Picking from `READY_UNSCHEDULED` or `READY_FUTURE` is a deliberate off-sprint choice — Step 2.3 (off-sprint warning) prompts for confirmation in both cases.
+
+### Step 2: Claim the item
 
 Once the developer picks an issue (or one was specified via argument):
 
-1. Check if it's already assigned: `gh issue view N --json assignees -q '.assignees[].login'`
-   - If assigned to someone else, warn: "This issue is assigned to @username. Do you want to reassign it to yourself?"
-   - If assigned to the current user, proceed (already claimed).
-2. Assign to self: `gh issue edit N --add-assignee @me`
-3. Update labels: `gh issue edit N --add-label in-progress --remove-label ready`
+1. **Find the corresponding Project item** by issue number from the item list. If the issue is not on the Project board:
+   - Tell the user: "Issue #N is not on the Project board. Run `/sprint refine N` to add and refine it, or check the issue exists."
+   - Stop.
+   Capture `ITEM_ID`.
+
+2. **Hard-block on Backlog**: If the item's Status is `Backlog` or unset, refuse:
+   - "Issue #N is at Status: Backlog. Run `/sprint refine N` to make it implementable, then `/sprint pick N`."
+   - Stop.
+
+3. **Off-sprint warning** (only if `CURRENT_ITERATION_ID` is set):
+   - If the item has Iteration set to a different iteration: ask "Issue #N is in iteration `<other>`, not the current iteration `<current>`. Pick anyway? [y/N]". If no, stop.
+   - If the item has no Iteration assigned: ask "Issue #N has no iteration assigned (not part of any sprint). Pick anyway? [y/N]". If no, stop.
+   - If the item is in the current iteration, no prompt — proceed.
+
+   When `CURRENT_ITERATION_ID` is None (infinite-sprint case), skip this step entirely.
+
+4. **Check current assignee** on the issue:
+   - `gh issue view N --json assignees -q '.assignees[].login'`
+   - If assigned to someone else: warn: "This issue is assigned to @<user>. Reassign to yourself? [y/N]" If no, stop.
+   - If assigned to current user: proceed.
+
+5. **Assign to self on the Issue**:
+
+```
+gh issue edit N --add-assignee @me
+```
+
+6. **Move Status: Ready → In Progress on the Project**:
+
+```
+gh project item-edit \
+  --id <ITEM_ID> --project-id <PROJECT_ID> \
+  --field-id <STATUS_FIELD_ID> \
+  --single-select-option-id <STATUS_OPTIONS["In Progress"]>
+```
 
 ### Step 3: Create branch
 
-1. Get the issue title: `gh issue view N --json title,labels -q '.title'`
+1. Get the issue title and type label: `gh issue view N --json title,labels`
 2. Determine branch prefix from labels:
    - `type:bug` → `bug/`
    - `type:feature` → `feat/`
    - `type:refactor` → `refactor/`
    - Default → `feat/`
-3. Generate branch name: `<prefix><N>-<slugified-title>` (lowercase, hyphens, max 50 chars)
+3. Generate branch name: `<prefix><N>-<slugified-title>` (lowercase, hyphens, max 50 chars).
    - Example: `bug/42-fix-feed-freeze-on-background`
 4. Create and switch: `git checkout -b <branch-name>`
    - If the branch already exists, ask the developer: switch to it or create an alternate name?
@@ -236,9 +410,9 @@ Once the developer picks an issue (or one was specified via argument):
 Fetch the full issue body: `gh issue view N --json body,title -q '.body'`
 
 Parse the issue body to extract:
-- **Acceptance Criteria** — these drive what to test
-- **Implementation Phases** — these drive the work order
-- **Risk Assessment** — be aware of these during implementation
+- **Acceptance Criteria** — drives what to test
+- **Implementation Phases** — drives the work order
+- **Risk Assessment** — be aware during implementation
 
 ### Step 5: Implement phase by phase
 
@@ -315,6 +489,17 @@ If no dependencies were added or upgraded in this PR, write 'No dependency chang
 "
 ```
 
+3. **Move Status: In Progress → In Review on the Project** (skill-driven; do not rely on the workflow):
+
+```
+gh project item-edit \
+  --id <ITEM_ID> --project-id <PROJECT_ID> \
+  --field-id <STATUS_FIELD_ID> \
+  --single-select-option-id <STATUS_OPTIONS["In Review"]>
+```
+
+The PR-merged → `Status: Done` transition is handled by the GitHub workflow if enabled (see [Setup Command](#setup-command)), not by the skill, since merge happens after the skill's job is done.
+
 ### Step 9: Report
 
 Show the PR URL and a summary of what was implemented, which phases were completed, and any remaining notes.
@@ -326,7 +511,7 @@ Show the PR URL and a summary of what was implemented, which phases were complet
 **Purpose**: Record an architectural or design decision with full rationale.
 
 Arguments after `decide` are optional:
-- `/sprint decide` — interactive, Claude asks what the decision is about
+- `/sprint decide` — interactive, ask what the decision is about
 - `/sprint decide "Use PostgreSQL for event store"` — title provided upfront
 
 ### Step 1: Find next decision number
@@ -381,41 +566,109 @@ Show the file path, a summary of the decision, and which issues were linked.
 
 ## Status Command
 
-**Purpose**: Bird's eye view of the current sprint state.
+**Purpose**: Bird's-eye view of the current sprint state, read from the Project board.
 
-Run all of these in parallel:
+Arguments after `status` are optional:
+- `/sprint status` — show the current iteration prominently; collapse other iterations and no-iteration items into a one-line count.
+- `/sprint status all` — show everything, including items in other iterations and items with no iteration set.
 
-1. `gh issue list --label in-progress --state open --json number,title,labels,assignees --limit 20`
-2. `gh issue list --label ready --no-assignee --json number,title,labels --limit 20`
-3. `gh issue list --label needs-refinement --json number,title,labels --limit 20`
-4. `gh issue list --state closed --json number,title,closedAt --limit 10 --sort updated`
-5. `ls .dev/decisions/D-*.md 2>/dev/null`
-6. `gh pr list --state open --json number,title,author,headRefName --limit 10`
+### Step 0: Resolve Project context
 
-Format as a dashboard:
+Run [Resolve Project Context](#resolve-project-context).
+
+### Step 1: Fetch in parallel
+
+Run these in parallel:
+
+A. Project items (single call):
+
+```
+gh project item-list <PROJECT_NUMBER> --owner <PROJECT_OWNER> --format json --limit 200
+```
+
+B. Open PRs in the repo:
+
+```
+gh pr list --state open --json number,title,author,headRefName,url --limit 20
+```
+
+C. Recently closed issues (fallback for Done if Project workflow isn't enabled):
+
+```
+gh issue list --state closed --json number,title,closedAt --limit 10 --sort updated
+```
+
+D. Decision records:
+
+```
+ls .dev/decisions/D-*.md 2>/dev/null
+```
+
+For each, read just the first line (title) for display.
+
+### Step 2: Slice items by Status
+
+From (A):
+
+- `IN_PROGRESS` = Status=In Progress
+- `IN_REVIEW` = Status=In Review
+- `READY` = Status=Ready
+- `BACKLOG` = Status=Backlog OR Status=unset
+- `DONE_RECENT` = Status=Done, sorted by `updatedAt` desc, top 5
+
+If `CURRENT_ITERATION_ID` is set (and the user did not pass `all`):
+- Within IN_PROGRESS, IN_REVIEW, READY: split into "this iteration" (Iteration=CURRENT) and "other" (else). Display "this iteration" prominently; collapse "other" and "no iteration" into one-line counts with a hint to run `/sprint status all`.
+
+If `CURRENT_ITERATION_ID` is None (infinite sprint case): show all items flat, no iteration grouping.
+
+Sort within each section by Priority (P0 first), then Size (smallest first).
+
+### Step 3: Reconcile Done with closed issues
+
+If `DONE_RECENT` is empty but (C) returned recently-closed issues, the "Item closed → Done" workflow is likely not enabled. Use (C) for the recent-done section and surface a one-line hint:
+
+```
+Hint: items closed on GitHub aren't moving to Status: Done on the board.
+Enable the "Item closed → Done" workflow at:
+https://github.com/<owner>/projects/<N>/workflows
+```
+
+### Step 4: Render dashboard
+
+Use `<PROJECT_TITLE>` from Resolve Project Context. The Project URL prefix depends on `<OWNER_TYPE>`: use `https://github.com/orgs/<OWNER>/projects/<N>` if `Organization`, `https://github.com/users/<OWNER>/projects/<N>` if `User`.
 
 ```
 === Sprint Status ===
+Project: <PROJECT_TITLE> (#<N>)   <PROJECT_URL>
+
+CURRENT ITERATION: Sprint 3   (Apr 21 → May 5, 6 days remaining)
 
 IN PROGRESS
-  #42  Feed freeze fix              @nirmal    [type:bug, priority:high]
-  #43  Search filter support         @alice     [type:feature, priority:med]
+  #42  Feed freeze fix          @nirmal    [bug, P0, M]
+  #43  Search filter support    @alice     [feature, P1, L]
 
-READY TO PICK
-  #44  Artist social links          [type:feature, priority:low]
-  #45  Refactor API layer           [type:refactor, priority:med]
+IN REVIEW
+  #40  Setup CI pipeline        @nirmal    [feature, P1, S]   PR #12
 
-NEEDS REFINEMENT
-  #46  Performance improvements     [needs-refinement]
+READY
+  #44  OAuth flow                          [feature, P1, M]
+  #45  Refactor API layer                  [refactor, P2, L]
 
-RECENTLY CLOSED
-  #40  Setup CI pipeline            closed 2d ago
-  #41  Fix memory leak              closed 1d ago
+BACKLOG (needs refinement)
+  #46  Performance improvements
+  #47  Filed via UI by @alice
+
+── Other iterations: 3 items in Sprint 4 (use `/sprint status all` to see)
+── No iteration: 5 items (use `/sprint status all` to see)
+
+RECENTLY DONE
+  #38  Setup auth middleware    closed 2d ago
+  #39  Database schema          closed 1d ago
 
 OPEN PRs
-  #12  bug/42-feed-freeze-fix       @nirmal
+  #12  feat/40-ci-pipeline      @nirmal
 
-DECISIONS
+DECISIONS (.dev/decisions/)
   D-001  Use Supabase for auth
   D-002  Monorepo structure
   D-003  JSON file persistence
@@ -423,85 +676,460 @@ DECISIONS
 
 If any section is empty, show "(none)" rather than omitting it.
 
-For decisions, read just the first line (title) from each file to display the name.
+If `<USER REQUEST>` was `status all`, do not collapse "other iterations" or "no iteration" — render them as full sub-sections.
+
+If no current iteration exists, drop the "CURRENT ITERATION" line and render Ready/InProgress/InReview as flat sections without sub-grouping.
 
 ---
 
 ## Refine Command
 
-**Purpose**: Take a rough issue and add structured acceptance criteria, phases, and risks to make it implementable.
+**Purpose**: Take a Project item that's currently in Backlog (or has no Status set) and add the missing structure — acceptance criteria, implementation phases, risks — plus set Priority and Size, then move it to `Status: Ready`.
 
 Arguments after `refine` are optional:
 - `/sprint refine 46` — refine issue #46 directly
-- `/sprint refine` — list issues labeled `needs-refinement` and let the developer choose
+- `/sprint refine` — list items needing refinement and let the developer choose
 
-### Step 1: Select issue
+### Step 0: Resolve Project context
 
-If no issue number provided, list issues needing refinement:
+Run [Resolve Project Context](#resolve-project-context).
+
+### Step 1: Select item
+
+If no issue number provided, fetch Project items at `Status=Backlog` or `Status=unset`:
 
 ```
-gh issue list --label needs-refinement --json number,title --limit 20
+gh project item-list <PROJECT_NUMBER> --owner <PROJECT_OWNER> --format json --limit 200
 ```
 
-Present the list and ask which one to refine.
+Filter to `Status in {Backlog, unset}` and present the list. Ask which one to refine.
 
-### Step 2: Read the issue
+If an issue number is provided directly, look it up in the item list.
 
-Fetch the full issue with comments:
+### Step 2: Add to Project if missing
+
+If the issue is **not on the Project board** (auto-add not enabled, manually-filed issue, etc.):
+
+```
+gh project item-add <PROJECT_NUMBER> --owner <PROJECT_OWNER> --url <ISSUE_URL> --format json
+```
+
+Capture `ITEM_ID` from `.id`. Continue refining as if it had been on the board all along.
+
+### Step 3: Read the issue + current field values
 
 ```
 gh issue view N --json body,title,labels,comments
 ```
 
-Display the current state to the developer.
+From the Project item: read current Priority, Size, Status, Iteration values (may be unset).
 
-### Step 3: Interactive refinement
+Display the current state to the developer: title, body, current field values, type label.
 
-Discuss with the developer to fill in what's missing:
+### Step 4: Already-Ready warning
 
-- Are the acceptance criteria complete? Add missing WHEN/THEN/SHALL statements.
-- Are implementation phases defined? Break the work into testable phases.
-- Are risks identified? Note technical risks, dependencies, unknowns.
-- Is the user story clear? Refine it if needed.
+If the item's Status is already `Ready`: proceed silently (the user explicitly asked to refine; let them update).
 
-### Step 4: Update the issue
+If the item's Status is `In Progress` or `In Review`: warn: "This item is in flight; changing acceptance criteria mid-flight is risky. Continue? [y/N]". If no, stop.
 
-Construct the updated issue body incorporating the refined content. Preserve any existing content that's still valid.
+### Step 5: Interactive refinement
 
-Update via the GitHub API:
+Walk the developer through what's missing, in order:
+
+A. **User Story** — if absent, ask and add.
+B. **Acceptance Criteria** — articulate WHEN/THEN/SHALL: happy path, edge cases, errors, persistence, UI.
+C. **Implementation Phases** — propose 2–4 ordered, independently testable phases. Discuss until right.
+D. **Risk Assessment** — technical risks, dependencies, unknowns.
+E. **Notes** — capture context.
+F. **Type label** — if missing, ask: feature / bug / refactor. `gh issue edit N --add-label "type:<x>"`.
+G. **Priority** — show current value (or "unset") and ask: "Keep / change to P0 / P1 / P2?"
+H. **Size** — show current value and ask: "Keep / change to XS / S / M / L / XL?"
+
+Always **show the current value and ask** — don't silently overwrite or silently keep.
+
+### Step 6: Update the issue body
+
+Construct the refined body using `<SKILL DIR>/templates/issue-body.md` as the scaffold, preserving any existing content that's still valid.
 
 ```
 gh api repos/{REPO}/issues/N -f body="<updated body>"
 ```
 
-### Step 5: Update labels
+### Step 7: Update Project fields
+
+Set Priority and Size **only if the user changed them in Step 5G/H** (skip the field-edit call when the user chose "keep"):
 
 ```
-gh issue edit N --remove-label needs-refinement --add-label ready
+gh project item-edit \
+  --id <ITEM_ID> --project-id <PROJECT_ID> \
+  --field-id <PRIORITY_FIELD_ID> \
+  --single-select-option-id <PRIORITY_OPTIONS["..."]>
+
+gh project item-edit \
+  --id <ITEM_ID> --project-id <PROJECT_ID> \
+  --field-id <SIZE_FIELD_ID> \
+  --single-select-option-id <SIZE_OPTIONS["..."]>
 ```
 
-### Step 6: Report
+Move Status: Backlog → Ready (only if the item was Backlog/unset; preserve In Progress/In Review/Done if the user is editing fields on an in-flight item):
 
-Show what was added/changed and confirm the issue is now marked as `ready`.
+```
+gh project item-edit \
+  --id <ITEM_ID> --project-id <PROJECT_ID> \
+  --field-id <STATUS_FIELD_ID> \
+  --single-select-option-id <STATUS_OPTIONS["Ready"]>
+```
+
+### Step 8: Optional iteration assignment
+
+Ask: "Assign to an iteration? (current / new / specific / none / skip)"
+- `current` → set to `CURRENT_ITERATION_ID` if exists
+- `new` → create iteration via `gh api graphql` (see [Plan Command](#plan-command), Step 3 lazy-creation)
+- `specific` → list existing iterations, user picks
+- `none` → clear iteration value
+- `skip` → don't change current iteration value
+
+### Step 9: Report
+
+```
+Refined #N:
+  Title:     <title>
+  Type:      <type>
+  Priority:  P1
+  Size:      M
+  Status:    Ready  (was Backlog)
+  Iteration: <name or 'none'>
+
+Available to /sprint pick.
+```
 
 ---
 
 ## Setup Command
 
-**Purpose**: Explicitly bootstrap the sprint workflow for a repository. This runs the same checks as [Ensure Setup](#ensure-setup) but reports what was created.
+**Purpose**: Bootstrap the sprint workflow for a repository: discover or create a GitHub Project, configure its fields per the Team Planning template, link the repo, and persist the Project number to `.dev/sprint-config.json`. This command is **idempotent** — running it again is safe and re-applies any missing config.
 
-### Step 1: Run Ensure Setup
+### Step 1: Verify prerequisites
 
-Follow the [Ensure Setup](#ensure-setup) steps.
+Run these checks in parallel:
 
-### Step 2: Report
+1. `gh auth status` — fail message: "GitHub CLI is not authenticated. Run `gh auth login`."
+2. `git rev-parse --is-inside-work-tree` — fail: "Not inside a git repository."
+3. `REPO = gh repo view --json nameWithOwner -q .nameWithOwner` — fail: "No GitHub remote found."
 
-Tell the developer what was set up:
+Set `OWNER = REPO.split('/')[0]` and `REPO_NAME = REPO.split('/')[1]`.
 
-- Which labels were created (or "all labels already exist")
-- Whether `.dev/decisions/` was created (or "already exists")
-- The repo name and current authentication status
-- Remind them of available commands: `/sprint plan`, `/sprint pick`, `/sprint status`, `/sprint decide`, `/sprint refine`
+### Step 2: Read existing config (if any)
+
+If `.dev/sprint-config.json` exists, parse it. If it points to a `project_number`, verify the Project still exists:
+
+```
+gh project view <project_number> --owner <project_owner> --format json
+```
+
+If the Project exists, skip Steps 3–5 (already discovered, linked, persisted) and continue from Step 6 (ensure fields + workflows + labels + dirs).
+
+If the Project no longer exists, warn the user and continue from Step 3 to re-discover/create.
+
+### Step 3: Discover or create Project
+
+```
+gh project list --owner <OWNER> --format json
+```
+
+**If one or more Projects exist**, present the list:
+
+```
+Projects in <OWNER>:
+  1. <title>  (#<num>)  <N items>  linked repos: <list>
+  2. <title>  (#<num>)  ...
+  N+1. Create new Project named '<REPO_NAME>'
+```
+
+Ask the user to pick one.
+
+**If no Projects exist** (or user picks "create new"), create one:
+
+```
+gh project create --owner <OWNER> --title "<REPO_NAME>" --format json
+```
+
+Capture `PROJECT_NUMBER` from the response. Tell the user the Project can be renamed later in the GitHub UI without breaking anything (the skill resolves by number, not name).
+
+If the user does not have permission to create Projects in the org, surface the error: "You don't have permission to create a Project in `<OWNER>`. Ask an org admin to create a Project (any name) and link this repo to it, then re-run `/sprint setup`."
+
+### Step 4: Link the repo to the Project
+
+```
+gh project link <PROJECT_NUMBER> --owner <OWNER> --repo <REPO>
+```
+
+Idempotent — silent success if already linked.
+
+### Step 5: Persist config
+
+```
+mkdir -p .dev
+```
+
+Write `.dev/sprint-config.json`:
+
+```json
+{
+  "project_number": <PROJECT_NUMBER>,
+  "project_owner": "<OWNER>"
+}
+```
+
+**Tell the user to commit this file** so all teammates resolve to the same Project — without it, each developer's `/sprint setup` will create a divergent local config. It is shared team state, not per-user config.
+
+### Step 6: Ensure Project fields exist (idempotent)
+
+Fetch current fields:
+
+```
+gh project field-list <PROJECT_NUMBER> --owner <OWNER> --format json
+```
+
+Fields used by the skill, drawn from the GitHub Team Planning template. Setup creates these three; Iteration is created later, on-demand:
+
+| Field | Type | Options | Created at |
+|---|---|---|---|
+| Status | Single-select | Backlog, Ready, In Progress, In Review, Done | `setup` |
+| Priority | Single-select | P0, P1, P2 | `setup` |
+| Size | Single-select | XS, S, M, L, XL | `setup` |
+
+The Iteration field is created lazily by `/sprint plan` or `/sprint refine` when the first sprint is named. Do NOT create it at setup — many users never use sprints.
+
+For each missing field, create it:
+
+```
+gh project field-create <PROJECT_NUMBER> --owner <OWNER> \
+  --name "Status" \
+  --data-type "SINGLE_SELECT" \
+  --single-select-options "Backlog,Ready,In Progress,In Review,Done"
+```
+
+If a field exists but is missing required options, add them via `gh api graphql` (the `gh project field-edit` surface may not cover option additions in all gh versions).
+
+Do not delete or rename existing extra options — teams may have customized.
+
+### Step 7: Surface workflow toggles to the user
+
+GitHub Projects v2 has built-in workflow automations that the skill cannot enable via API (UI-only configuration). Detect owner type to construct the right URL:
+
+```
+OWNER_TYPE = gh api graphql -f query='query($login:String!){repositoryOwner(login:$login){__typename}}' \
+               -f login=<OWNER> --jq '.data.repositoryOwner.__typename'
+PROJECT_URL_PREFIX = "https://github.com/orgs/<OWNER>" if OWNER_TYPE=="Organization" else "https://github.com/users/<OWNER>"
+```
+
+Tell the user:
+
+```
+One-time workflow setup:
+Open <PROJECT_URL_PREFIX>/projects/<PROJECT_NUMBER>/workflows
+and enable these workflows (click each toggle):
+
+  ✓ Auto-add to project
+       (which repos? add: <REPO>)
+  ✓ Item closed
+       (set Status: Done)
+  ✓ Pull request merged
+       (set Status: Done)
+  ✓ Pull request opened
+       (set Status: In Review)
+
+The skill drives Status transitions for actions it takes (pick, PR creation),
+so it works even if these workflows are off — but enabling them keeps the
+board in sync with actions taken outside the skill (UI, bots, other tools).
+```
+
+### Step 8: Ensure type/package labels in the repo
+
+Check whether the canonical sprint labels exist. Use exact-name matching, not substring search:
+
+```
+gh api repos/<REPO>/labels --paginate --jq '.[] | .name' | grep -Fx 'type:feature'
+```
+
+If `type:feature` is not found, read `<SKILL DIR>/setup/labels.json` and create each label:
+
+```
+gh label create "<name>" --color "<color>" --description "<description>" --force
+```
+
+(`--force` makes this idempotent.)
+
+### Step 9: Ensure decisions directory
+
+```
+mkdir -p .dev/decisions
+```
+
+### Step 10: Report
+
+Use the actual `<PROJECT_TITLE>` (from `gh project view` in Step 2 or 3) and `<PROJECT_URL_PREFIX>` (from Step 7) — not `<REPO_NAME>`, since the user may have linked an existing differently-named Project.
+
+```
+Setup complete:
+  Project: <PROJECT_TITLE> at <PROJECT_URL_PREFIX>/projects/<PROJECT_NUMBER>
+  Fields: Status, Priority, Size  (Iteration created lazily on first sprint use)
+  Workflows: please enable manually at the URL above (one-time setup)
+  Labels: <created list, or "all already existed">
+  Config saved: .dev/sprint-config.json  (commit this — shared team state)
+  Decisions dir: .dev/decisions/
+
+Next: /sprint plan to add work, /sprint status for the dashboard.
+```
+
+---
+
+## Upgrade Command
+
+**Purpose**: Pull the latest version of the sprint skill from its git origin. The skill itself is a git checkout at `<SKILL DIR>`; this command runs `git fetch` + `git pull --ff-only` against it. Optionally switches to a specific branch for testing pre-merge changes.
+
+### Invocation forms
+
+- `/sprint upgrade` — pull whatever branch the skill repo is currently on
+- `/sprint upgrade <branch>` — switch to `<branch>` (creating local tracking branch from `origin/<branch>` if needed) and pull. The skill stays on this branch for future plain `/sprint upgrade` calls until you run `/sprint upgrade reset`.
+- `/sprint upgrade reset` — switch back to the repo's default branch (`master` or `main`, auto-detected) and pull.
+- `/sprint upgrade check` — dry-run. Fetches and reports what would change, but does not switch or pull.
+
+### Step 1: Validate skill directory
+
+Verify `<SKILL DIR>` is a git checkout of the sprint skill:
+
+```
+git -C <SKILL DIR> rev-parse --is-inside-work-tree
+```
+
+If this fails: "Skill at `<SKILL DIR>` is not a git checkout — was it copied manually or installed via a package manager? Re-clone with: `git clone <repo-url> <SKILL DIR>`." Stop.
+
+Verify `<SKILL DIR>/SKILL.md` exists:
+
+If not: "Skill at `<SKILL DIR>` doesn't contain SKILL.md. Aborting upgrade." Stop.
+
+### Step 2: Detect default branch
+
+```
+DEFAULT_BRANCH = git -C <SKILL DIR> symbolic-ref refs/remotes/origin/HEAD --short \
+                   | sed 's|^origin/||'
+```
+
+If detection fails (no `origin/HEAD` ref), fall back to `master`.
+
+### Step 3: Parse argument
+
+Read the first word of `<USER REQUEST>` after `upgrade`:
+
+| Arg | MODE | TARGET_BRANCH |
+|---|---|---|
+| (none) | `pull` | current branch |
+| `reset` | `switch+pull` | `DEFAULT_BRANCH` |
+| `check` | `dry-run` | current branch |
+| anything else | `switch+pull` | the argument |
+
+### Step 4: Capture current state
+
+```
+BEFORE_COMMIT = git -C <SKILL DIR> rev-parse HEAD
+BEFORE_BRANCH = git -C <SKILL DIR> rev-parse --abbrev-ref HEAD
+```
+
+If `BEFORE_BRANCH` is `HEAD` (detached): "Skill repo is in detached HEAD state. Run `/sprint upgrade reset` to return to `<DEFAULT_BRANCH>`." Stop.
+
+### Step 5: Refuse on local modifications
+
+```
+git -C <SKILL DIR> status --porcelain
+```
+
+If non-empty: "Skill directory has uncommitted local changes:\n<short status>\nRefusing to upgrade. Either commit, stash, or discard them, then re-run."  Stop.
+
+### Step 6: Fetch
+
+```
+git -C <SKILL DIR> fetch origin --prune
+```
+
+### Step 7: Branch switch (if MODE is `switch+pull` and TARGET_BRANCH ≠ BEFORE_BRANCH)
+
+Verify target branch exists on origin:
+
+```
+git -C <SKILL DIR> rev-parse --verify origin/<TARGET_BRANCH>
+```
+
+If not: "Branch `<TARGET_BRANCH>` does not exist on origin. Available branches: `<git branch -r | head -10>`. Run `/sprint upgrade reset` to return to `<DEFAULT_BRANCH>`." Stop.
+
+Refuse if currently ahead of upstream on the branch we're leaving:
+
+```
+AHEAD_ON_LEAVING = git -C <SKILL DIR> rev-list --count origin/<BEFORE_BRANCH>..HEAD
+```
+
+If `AHEAD_ON_LEAVING > 0`: "Current branch `<BEFORE_BRANCH>` is `<N>` commits ahead of origin — refusing to switch and lose your work. Push or reset first." Stop.
+
+Switch:
+
+```
+git -C <SKILL DIR> switch <TARGET_BRANCH>
+```
+
+(Modern `git switch` auto-creates a local tracking branch from `origin/<TARGET_BRANCH>` when needed.)
+
+Inform the user: "Switched skill to branch `<TARGET_BRANCH>`. Future `/sprint upgrade` calls will track this branch until you run `/sprint upgrade reset`."
+
+### Step 8: Check for divergence on target branch
+
+```
+AHEAD  = git -C <SKILL DIR> rev-list --count origin/<TARGET_BRANCH>..HEAD
+BEHIND = git -C <SKILL DIR> rev-list --count HEAD..origin/<TARGET_BRANCH>
+```
+
+If `BEHIND == 0` and we did not just switch:
+- MODE is `dry-run`: "Already up to date on `<TARGET_BRANCH>`." Stop.
+- MODE is `pull`: "Already up to date on `<TARGET_BRANCH>`." Stop.
+
+If `AHEAD > 0`: "Local branch `<TARGET_BRANCH>` is `<N>` commits ahead of origin — refusing fast-forward pull. Push or reset, then re-run." Stop.
+
+If MODE is `dry-run`: report the would-be changes (next step's preview) and stop without pulling.
+
+### Step 9: Pull (fast-forward only)
+
+```
+git -C <SKILL DIR> pull --ff-only origin <TARGET_BRANCH>
+AFTER_COMMIT = git -C <SKILL DIR> rev-parse HEAD
+```
+
+### Step 10: Report
+
+```
+CHANGED_FILES  = git -C <SKILL DIR> diff --name-only <BEFORE_COMMIT> <AFTER_COMMIT>
+RECENT_COMMITS = git -C <SKILL DIR> log --oneline <BEFORE_COMMIT>..<AFTER_COMMIT>
+```
+
+Display:
+
+```
+Upgraded sprint skill on '<TARGET_BRANCH>':
+  <BEFORE_COMMIT[0:7]> → <AFTER_COMMIT[0:7]>  (<BEHIND> new commits)
+
+Recent changes:
+  <oneline list>
+
+Files updated:
+  <list>
+
+[If TARGET_BRANCH != DEFAULT_BRANCH:]
+Currently tracking non-default branch — run `/sprint upgrade reset` to return to `<DEFAULT_BRANCH>`.
+
+Changes take effect on next /sprint invocation
+(the currently-running command is still the previous version).
+```
+
+For MODE `dry-run`, replace "Upgraded" with "Would upgrade" and skip the "Files updated" section (just show the oneline log).
 
 ---
 
@@ -651,8 +1279,11 @@ On success (clean pass or accepted fallback), append a row to an in-memory verif
 
 Apply these rules across all commands:
 
+- **Missing `.dev/sprint-config.json`**: Tell the user to run `/sprint setup` first. Don't try to auto-discover or auto-create — setup is explicit.
+- **Project deleted or moved**: If the configured Project no longer exists, surface clearly and tell the user to re-run `/sprint setup`.
 - **Network errors from `gh`**: Report the error clearly and suggest the developer check their internet connection and `gh auth status`.
-- **Permission errors**: Report that the user may not have write access to the repository.
-- **Empty results**: Never show raw empty output. Always say "No issues found matching criteria" or similar.
+- **Permission errors**: Report that the user may not have write access to the repository or to the Project (Project creation in some orgs is admin-only).
+- **Empty results**: Never show raw empty output. Always say "No items found matching criteria" or similar.
 - **Malformed issue body**: When reading an issue body that doesn't follow the template structure (e.g., created manually on GitHub without the template), work with what's available. Don't fail — adapt. If refining, add the structure that's missing.
 - **Rate limiting**: If `gh api` returns a rate limit error, tell the developer and suggest waiting.
+- **gh CLI feature gaps**: If a `gh project` subcommand doesn't support an operation (e.g., adding iterations to an iteration field), fall back to `gh api graphql` with the appropriate mutation. If even that fails, surface the failure clearly with the command that was attempted — never silently skip.

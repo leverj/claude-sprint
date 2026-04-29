@@ -25,6 +25,16 @@ Text after `/sprint` is `<USER REQUEST>`. `<SKILL DIR>` is the install path.
 
 ## Update
 
+Recommended (from inside any project that uses the skill):
+
+```
+/sprint upgrade
+```
+
+See [Upgrade Command](../../SKILL.md#upgrade-command) for branch switching (`/sprint upgrade <branch>`, `/sprint upgrade reset`, `/sprint upgrade check`).
+
+Manual fallback:
+
 ```bash
 cd ~/.claude/skills/sprint && git pull
 ```
