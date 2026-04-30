@@ -121,6 +121,30 @@ If `ITERATION_FIELD_ID` is `None`, set `CURRENT_ITERATION_ID = None`.
 
 ---
 
+## Grill Me Protocol
+
+**Purpose**: Build shared understanding through small, focused turns — not a form. Used by `/sprint plan` and `/sprint refine` so the developer doesn't have to read or fill in long blocks upfront. They get small bites and answer one thing at a time.
+
+**Core rules**:
+
+1. **One question per turn.** Each assistant message contains exactly one focused question. Never list multiple questions in the same turn, never present a checklist for the developer to fill in, never preview "and then I'll ask about X, Y, Z."
+2. **Wait for the answer.** Do not predict, do not pre-fill, do not move on until the developer has answered.
+3. **Let the answer shape the next question.** The next question is informed by what the developer just said. The protocol is *adaptive*, not a script — if an answer reveals a sharp edge case, drill into that next, even if it skips ahead in the dimensions list.
+4. **Cover the dimensions, not in any fixed order.** Dimensions to cover for a new issue (or to backfill on an existing issue):
+   - **Problem**: what hurts? what's the goal?
+   - **Users / scope**: who's affected? what's in / out?
+   - **Behavior**: happy path, edge cases, errors, persistence, UI behavior.
+   - **Type**: feature / bug / refactor.
+   - **Priority**: P0 (blocking) / P1 (important) / P2 (nice-to-have).
+   - **Size**: XS / S / M / L / XL.
+   - **Risks & dependencies**: technical unknowns, blockers, related work.
+   - **Phasing**: how to split implementation into 2–4 independently testable phases.
+5. **Reflect periodically.** After 3–5 answered questions, summarize the picture in 2–3 lines and ask "does that match your intent?" before continuing. This catches drift early instead of at the end.
+6. **Escape hatch.** If the developer pastes a full spec, says "just create it", or otherwise signals they don't want to be interviewed, skip the protocol: propose the structured issue directly for confirmation.
+7. **Stop when the dimensions are covered well enough to write a good issue.** Don't grill for completeness's sake — there's almost always more to ask, and the goal is a good issue, not a perfect one.
+
+---
+
 ## Plan Command
 
 **Purpose**: Interactive session to refine and create one or more structured GitHub Issues, add them to the Project, and set their Status / Priority / Size fields.
@@ -133,26 +157,11 @@ Run [Resolve Project Context](#resolve-project-context).
 
 Ask the developer what they want to build, fix, or improve. They may give anything from a one-liner ("add social login") to a detailed spec.
 
-**If the requirement is large or spans multiple concerns**, break it down into smaller, independently implementable issues. For example, "add social login" might decompose into:
-- OAuth provider integration (Google, Apple)
-- Account linking/merging flow
-- Session management and token refresh
-- UI for sign-in screen
+Run the [Grill Me Protocol](#grill-me-protocol) to flesh out the requirement — small, focused turns, one question at a time, adapting to each answer.
 
-Present the proposed breakdown to the developer and discuss each piece:
+**Decomposition** — when the picture coming back from Grill Me reveals multiple distinct concerns, propose a split: "This looks like it breaks into N pieces: [list]. Does this split make sense, or would you group differently?" Example: "add social login" might break into OAuth provider integration / Account linking / Session management / Sign-in UI. If the developer agrees to split, run Grill Me on each piece individually to fill in its dimensions. If the requirement is small and self-contained, skip decomposition and stay with the single piece.
 
-1. **Propose the decomposition**: "This looks like it breaks into N pieces: [list]. Does this split make sense, or would you group things differently?"
-2. **Discuss each piece one by one**: For each proposed issue, probe for:
-   - What problem does this solve?
-   - Who is affected?
-   - What are the edge cases and constraints?
-   - Is this a feature, bug fix, or refactor?
-   - **Priority**: P0 / P1 / P2 (P0 = blocking; P1 = important; P2 = nice-to-have).
-   - **Size**: XS / S / M / L / XL (rough effort estimate).
-   - Are there dependencies between this and the other pieces?
-3. **Get confirmation**: Don't create any issues until the developer confirms the full set. They may want to merge, split, reprioritize, or defer some pieces.
-
-If the requirement is small and self-contained, skip the decomposition step and discuss it directly.
+**Confirmation** — don't create any issues until the developer confirms the full set. They may want to merge, split, reprioritize, or defer pieces.
 
 Note dependencies between issues in the Notes section of each issue body (e.g., "Depends on #42 for OAuth token flow").
 
@@ -767,7 +776,7 @@ If the item's Status is `In Progress` or `In Review`: warn: "This item is in fli
 
 ### Step 5: Interactive refinement
 
-Walk the developer through what's missing, in order:
+Walk the developer through what's missing using the [Grill Me Protocol](#grill-me-protocol) — one question per turn, adapt to the answer, never present A–I as a single form to fill in. The dimensions to backfill, in roughly this order, skipping anything already populated:
 
 A. **User Story** — if absent, ask and add.
 B. **Acceptance Criteria** — articulate WHEN/THEN/SHALL: happy path, edge cases, errors, persistence, UI.
