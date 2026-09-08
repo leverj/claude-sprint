@@ -246,25 +246,48 @@ If `ITERATION_FIELD_ID` is `None`, set `CURRENT_ITERATION_ID = None`.
 4. **Cover the dimensions, not in any fixed order.** Dimensions to cover for a new issue (or to backfill on an existing issue):
    - **Problem**: what hurts? what's the goal?
    - **Users / scope**: who's affected? what's in / out?
-   - **Behavior**: happy path, edge cases, errors, persistence, UI behavior — including the echo question below whenever a request value is shown back to anyone.
+   - **Behavior**: happy path, edge cases, errors, persistence, UI behavior — including the [Resolved-Value Rule](#resolved-value-rule) when a request-derived value is displayed.
    - **Type**: feature / bug / refactor.
    - **Risks & dependencies**: technical unknowns, blockers, related work.
    - **Phasing**: how to split implementation into 2–4 independently testable phases.
 
-   **Ask the echo question whenever the feature shows anyone a value that came
-   from the request.** A path segment, a query parameter, a name someone typed —
-   if it ends up in front of a human, ask: *what does the server look it up
-   against, and what does it show when the lookup fails?* If there is no answer,
-   the feature is a place for a stranger to write a sentence on your own surface,
-   under your name, and the acceptance criteria should say what appears on a
-   miss. Design-time is the cheap moment: escaping, parameterised queries and
-   input sanitisation do not touch this class — the payload is ordinary prose —
-   so it survives every later gate and only shows up once the route is live.
+   **When a request-derived value is displayed to a user** — a path segment, a
+   query parameter, a name someone typed — cover the [Resolved-Value
+   Rule](#resolved-value-rule). Two turns, never one:
+   1. "What authoritative source resolves this value?"
+   2. After the answer: "What does the user see when that source has no match?"
 
    **Priority and Size are decided by the assistant, not asked.** Infer Priority (P0 blocking / P1 important / P2 nice-to-have) from scope and impact. Infer Size (XS / S / M / L / XL) from the implementation phases and risk surface. State the chosen values in the proposed issue summary so the developer can override them.
 5. **Reflect periodically.** After 3–5 answered questions, summarize the picture in 2–3 lines and ask "does that match your intent?" before continuing. This catches drift early instead of at the end.
 6. **Escape hatch.** If the developer pastes a full spec, says "just create it", or otherwise signals they don't want to be interviewed, skip the protocol: propose the structured issue directly for confirmation.
 7. **Stop when the dimensions are covered well enough to write a good issue.** Don't grill for completeness's sake — there's almost always more to ask, and the goal is a good issue, not a perfect one.
+
+---
+
+## Resolved-Value Rule
+
+**A value that arrives in a request and is then displayed to a user must be
+resolved against an authoritative source, and the issue must say what is
+displayed when that resolution finds nothing.**
+
+Applies to a path segment, query parameter, submitted field or header that
+reaches a page title, link-preview/OG meta, a heading, an author name, a push
+notification, an operator dashboard, or any surface another user sees. It does
+not apply to values the system merely stores or logs without presenting them as
+fact.
+
+Output encoding prevents code injection; it does not make attacker-controlled
+prose trustworthy or authoritative. So this is a requirements question, not
+something a later security gate reliably catches — the payload is ordinary
+prose and matches no filter or scanner pattern. `leverj/ezel` shipped a route
+that stamped an unresolved URL segment into `<title>` and `og:*`, which let a
+crafted link render a stranger's sentence under the company's name with valid
+TLS, previewed in a chat client without the victim clicking. It survived every
+downstream gate for months.
+
+Write the miss case as its own criterion. Distinguish **no matching record**
+(show fixed copy the team wrote) from an **operational failure** — timeout,
+authorization, malformed response — whose behavior is usually different.
 
 ---
 
@@ -537,7 +560,7 @@ Capture per-issue: `PARENT` = `{existing-issue-number}` | `{new-parent}` | `none
 For each requirement discussed, read the template from `<SKILL DIR>/templates/issue-body.md` and fill it in:
 
 - **User Story**: "As a [role], I want [capability] so that [benefit]" format.
-- **Acceptance Criteria**: WHEN/THEN/SHALL format. Cover happy path, edge cases, error handling, persistence (if applicable), UI/UX behavior (if applicable).
+- **Acceptance Criteria**: WHEN/THEN/SHALL format. Cover happy path, edge cases, error handling, persistence (if applicable), UI/UX behavior (if applicable). Apply the [Resolved-Value Rule](#resolved-value-rule): if the issue displays a request-derived value, include a criterion for the no-match case.
 - **Implementation Phases**: Break into 2–4 ordered phases. Each phase independently testable. Don't be too granular — each should represent a meaningful chunk.
 - **Risk Assessment**: Technical risks, dependencies, unknowns.
 - **Notes**: Context, links to decisions, references.
@@ -1285,7 +1308,7 @@ If the item's Status is `In Progress` or `In Review`: warn: "This item is in fli
 Walk the developer through what's missing using the [Grill Me Protocol](#grill-me-protocol) — one question per turn, adapt to the answer, never present A–I as a single form to fill in. The dimensions to backfill, in roughly this order, skipping anything already populated:
 
 A. **User Story** — if absent, ask and add.
-B. **Acceptance Criteria** — articulate WHEN/THEN/SHALL: happy path, edge cases, errors, persistence, UI. If any request value is shown back to a human, one criterion must say what is displayed when the lookup for it fails.
+B. **Acceptance Criteria** — articulate WHEN/THEN/SHALL: happy path, edge cases, errors, persistence, UI. Apply the [Resolved-Value Rule](#resolved-value-rule) and record the outcome either way: a no-match criterion, or a note that the issue displays no request-derived value.
 C. **Implementation Phases** — propose 2–4 ordered, independently testable phases. Discuss until right.
 D. **Risk Assessment** — technical risks, dependencies, unknowns.
 E. **Notes** — capture context.
